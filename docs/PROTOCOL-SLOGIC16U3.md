@@ -2,7 +2,7 @@
 
 Distilled from the working libsigrok driver at
 `src/hardware/sipeed-slogic-analyzer/` (`api.c`, `protocol.c`) in a libsigrok checkout -
-see https://sigrok.org/wiki/Libsigrok. That driver is the ground truth. If anything here
+see https://github.com/tralamazza/libsigrok. That driver is the ground truth. If anything here
 disagrees with it, the driver wins - go read it, do not guess.
 
 Verified on the attached unit (`ioreg -p IOUSB -l`):
