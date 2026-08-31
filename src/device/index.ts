@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 export type { CaptureConfig, Device, SampleSink } from './types.js';
 export {
   Slogic16U3,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * The samples <-> pixels transform, and the pan/zoom arithmetic that drives it.
  *

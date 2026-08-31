@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Daniel Tralamazza
 ##
 ## Pure-Python re-implementation of the `sigrokdecode` module that
 ## libsigrokdecode's C core exposes to protocol decoders.

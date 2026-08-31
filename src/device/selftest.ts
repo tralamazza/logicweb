@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * Standalone hardware self test for the SLogic16 U3 WebUSB transport.
  *

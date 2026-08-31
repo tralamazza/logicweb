@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
@@ -31,6 +33,18 @@ function requireRuntimeAssets(): Plugin {
   };
 }
 
+/*
+ * Every source file carries an SPDX header, but the minifier strips comments, so the
+ * built bundles would otherwise reach users with no licence notice at all - which is
+ * the one thing the GPL is actually about. Re-attach it to each emitted chunk.
+ */
+const BANNER =
+  '/*! SPDX-License-Identifier: GPL-3.0-or-later\n' +
+  ' * logicweb - Copyright (C) 2026 Daniel Tralamazza\n' +
+  ' * Free software with NO WARRANTY, under GNU GPL v3 or later.\n' +
+  ' * Source: https://github.com/tralamazza/logicweb\n' +
+  ' */';
+
 export default defineConfig({
   server: { host: '127.0.0.1', port: 5173 },
 
@@ -40,7 +54,12 @@ export default defineConfig({
    * import at all, so without this the worker fails at parse time in the
    * production build while still working in dev - the worst shape of bug.
    */
-  worker: { format: 'es' },
+  worker: {
+    format: 'es',
+    rollupOptions: { output: { banner: BANNER } },
+  },
+
+  build: { rollupOptions: { output: { banner: BANNER } } },
 
   plugins: [requireRuntimeAssets()],
 });

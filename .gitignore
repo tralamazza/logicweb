@@ -6,6 +6,8 @@ dist/
 public/pyodide/
 public/decoders/
 
-# Scratch screenshots from the reference tooling. The numbered ones are evidence
-# and are committed; anything underscore-prefixed is a working file.
-reference/screens/_*.png
+# CPython bytecode. src/decode/py/ is imported by build-manifest.py with the host
+# interpreter, so running any tool that touches it used to dirty tracked .pyc files
+# and show up as unrelated changes in every commit.
+__pycache__/
+*.pyc

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * Entry point. Nothing here but construction and a loud failure if it does not construct -
  * a shell that silently renders nothing is the worst possible outcome to debug.

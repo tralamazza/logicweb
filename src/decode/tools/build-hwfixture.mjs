@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 // Turn the committed real hardware captures in fixtures/ into a
 // small edge-list fixture the in-browser bench can use, so the known-answer
 // checks run against real captured signal through the real client path.

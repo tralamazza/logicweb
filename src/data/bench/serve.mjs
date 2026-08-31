@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * Serves the benchmark page with the COOP/COEP headers that
  * performance.measureUserAgentSpecificMemory() requires, collects the result the page

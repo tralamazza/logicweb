@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * InterleavedSampleStore - the alternative that was rejected, kept so the rejection is a
  * measurement instead of an opinion.

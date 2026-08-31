@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * Register-level protocol for the Sipeed SLogic16 U3 (VID 0x359f, PID 0x3031).
  *

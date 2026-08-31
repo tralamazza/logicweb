@@ -1,4 +1,8 @@
 /*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Daniel Tralamazza
+ */
+/*
  * The chrome. Every number here is measured off rendered output with
  * src/ui/tools/measure-chrome.py - see src/ui/NOTES.md section 1 for the tables and
  * src/ui/metrics.ts for the same values in TypeScript.

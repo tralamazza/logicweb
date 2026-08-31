@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 // Differential conformance harness: run every stock decoder under the Pyodide
 // shim and under native sigrok-cli on the *same* capture, and diff the
 // annotations (sample numbers included). A decoder only counts as "runs" if

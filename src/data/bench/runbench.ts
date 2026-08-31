@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * Node entry for the benchmark. The browser run is the one that counts (that is where
  * this code will actually live), but node is the same V8 and it makes the edit-measure

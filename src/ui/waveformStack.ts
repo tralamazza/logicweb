@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /**
  * The channel stack: N WaveformRenderers on N canvases, driven from one viewport.
  *

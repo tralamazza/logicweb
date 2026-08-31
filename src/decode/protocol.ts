@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Daniel Tralamazza
 /** Message protocol between the main thread and the decode worker. Internal:
  *  the UI talks to `DecodeClient`, not to these. */
 
