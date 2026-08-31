@@ -1,0 +1,16 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Daniel Tralamazza -->
+<!--
+  Two digital traces on the plot background. Colours are the app's own: bg10 from
+  style.css, and channels 6 and 5 from CHANNEL_COLORS in src/ui/metrics.ts.
+
+  Drawn on a 32x32 grid with 2.5px strokes and miter joins, so the edges stay square
+  rather than rounding off into illegible blobs at 16x16.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="6" fill="#1B1B1C"/>
+  <g fill="none" stroke-width="2.5" stroke-linejoin="miter" stroke-linecap="butt">
+    <path stroke="#53A9FD" d="M4 15 H9 V9 H15 V15 H21 V9 H28"/>
+    <path stroke="#58c667" d="M4 25 H8 V19 H13 V25 H20 V19 H24 V25 H28"/>
+  </g>
+</svg>

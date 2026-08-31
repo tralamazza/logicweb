@@ -54,11 +54,16 @@ which is permissive and GPL-compatible.
 
 Pyodide is likewise vendored rather than committed.
 
-**Known gap:** `npm run vendor` copies the seven runtime files Pyodide actually loads and
-does not copy Pyodide's own licence files, so a deployed `dist/` currently redistributes
-MPL-2.0 and PSF code without shipping their notices. This does not affect the repository,
-where nothing of Pyodide is committed, but it should be fixed in `vendor-assets.mjs`
-before treating a deployment as licence-clean.
+The Pyodide npm package ships no licence file of its own - only `README.md` and
+`package.json` - so the two texts are committed here under `licenses/` and staged into
+`public/pyodide/` by `npm run vendor`, next to the code they cover. The CPython version
+is read from `pyodide-lock.json` rather than inferred from the package version, so
+bumping Pyodide surfaces a licence that no longer matches.
+
+Both the vendor script and the build refuse to proceed if either text is absent. A
+missing licence file does not otherwise break anything, which is exactly why it needs to
+fail loudly: the alternative is a build that works perfectly and quietly redistributes
+MPL-2.0 and PSF code with no notice attached.
 
 ## Everything else
 
@@ -73,6 +78,16 @@ GPLv3 obligations attach to *conveying* the program. Serving the JavaScript bund
 WebAssembly and the decoder zip to a browser is generally treated as conveying, so the
 people loading the site are recipients who are owed corresponding source. A public
 repository containing this source satisfies that.
+
+A published deployment therefore carries, without needing the repository:
+
+| In `dist/` | Covers |
+|---|---|
+| `LICENSE.txt` | this project, and the GPL decoders in `decoders.zip` |
+| `pyodide/LICENSE-pyodide-MPL-2.0.txt` | the Pyodide runtime |
+| `pyodide/LICENSE-cpython-PSF.txt` | the CPython it embeds |
+| a `/*!` banner on every JS chunk | notice plus a link to the source |
+| per-file headers inside `decoders.zip` | each decoder's own licence |
 
 GPLv3 is not AGPLv3: it imposes nothing extra merely because the software is reachable
 over a network.

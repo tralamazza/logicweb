@@ -60,9 +60,15 @@ Measured against a build served from a `/logicweb/` subdirectory in headless Bra
 |---|---|
 | App boots, decode worker warms | yes |
 | `pyodide.asm.wasm`, `python_stdlib.zip`, `decoders.zip` fetched under the prefix | yes |
-| 404s | only `/favicon.ico` |
+| 404s | none |
 | `isSecureContext` | true - WebUSB needs this, and Pages is HTTPS |
 | `crossOriginIsolated` / `SharedArrayBuffer` | **false** |
+
+The 404 that used to be in that table was `/favicon.ico`, and it was worth more than it
+looked: a page that declares no icon makes the browser probe `/favicon.ico` at the
+**domain** root, not under the base path. For a project page that root belongs to
+`<owner>.github.io`, not to this site, so it can never be satisfied from this repository.
+`index.html` now declares `public/favicon.svg`, which stops the probe happening at all.
 
 **The wasm MIME type is a hard dependency, not a nicety.** Serving `pyodide.asm.wasm` as
 `application/octet-stream` does not degrade to a slower path - Pyodide fails to

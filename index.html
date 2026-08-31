@@ -6,6 +6,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>logicweb</title>
+  <!--
+    Declaring an icon is what stops the browser probing /favicon.ico at the DOMAIN root -
+    which, for a project page served from a subdirectory, is not this site's to serve and
+    404s. Vite rewrites this href with the build's base, so it follows the subdirectory.
+  -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="stylesheet" href="/src/ui/style.css" />
 </head>
 <body>

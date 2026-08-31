@@ -59,6 +59,32 @@ for (const f of KEEP) {
 const pyVersion = JSON.parse(
   fs.readFileSync(path.join(pyodideDir, 'package.json'), 'utf8')).version;
 
+// -- Pyodide licences --------------------------------------------------------
+// Shipping Pyodide means redistributing MPL-2.0 code and the CPython it embeds,
+// both of which require their notices to travel with the binaries. The npm
+// package contains no licence file of its own - only README.md and
+// package.json - so the texts are committed under licenses/ and staged here,
+// next to the code they cover.
+//
+// Checked, not assumed: pyodide-lock.json says which CPython this build
+// embeds, and the licence below is that version's. Bumping pyodide means
+// re-checking it.
+const embeddedPython = JSON.parse(
+  fs.readFileSync(path.join(pyodideDir, 'pyodide-lock.json'), 'utf8')).info.python;
+const LICENSES = [
+  ['pyodide-LICENSE.txt', 'LICENSE-pyodide-MPL-2.0.txt'],
+  ['cpython-LICENSE.txt', 'LICENSE-cpython-PSF.txt'],
+];
+for (const [from, to] of LICENSES) {
+  const src = path.join(ROOT, 'licenses', from);
+  if (!fs.existsSync(src)) {
+    console.error(`missing licence text: licenses/${from}`);
+    console.error('public/pyodide/ must not be staged without it - see NOTICE.md');
+    process.exit(1);
+  }
+  fs.copyFileSync(src, path.join(outPy, to));
+}
+
 // -- Decoder tree ------------------------------------------------------------
 // zipimport reads these straight out of the archive, which is what
 // libsigrokdecode itself does for zipped decoder sets.
@@ -84,4 +110,6 @@ execFileSync('python3', [
 
 const mb = (n) => (n / 1048576).toFixed(2) + ' MB';
 console.log(`pyodide ${pyVersion}: ${KEEP.length} files, ${mb(pyBytes)} -> public/pyodide/`);
+console.log(`  + licences for pyodide (MPL-2.0) and CPython ${embeddedPython} (PSF)`);
 console.log(`decoders: ${decIds.length} decoders, ${mb(fs.statSync(zipPath).size)} -> public/decoders/decoders.zip`);
+console.log('  decoder licence headers travel inside the zip; the GPL text ships as dist/LICENSE.txt');
