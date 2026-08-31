@@ -39,9 +39,9 @@ jobs:
       LIBSIGROKDECODE_REF: 71f451443029322d57376214c330b518efd84f88
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -82,10 +82,17 @@ jobs:
       - name: Build
         run: npm run build -- --base='${{ steps.base.outputs.path }}'
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
+          # Not the default, and not optional here. v5 tars the site with
+          # `--exclude=.[^/]*` unless this is true; v3, which this replaced, had
+          # no such exclusion. Without it the bump would silently drop
+          # dist/.nojekyll - a file whose entire job is to exist. Nothing would
+          # break today, since the Actions deploy path never runs Jekyll, but
+          # the guard would be gone with nothing to show it had left.
+          include-hidden-files: true
 
   deploy:
     needs: build
@@ -95,4 +102,4 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
