@@ -1,0 +1,20 @@
+{
+  "name": "logicweb",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "vendor": "node src/decode/tools/vendor-assets.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5174",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/w3c-web-usb": "^1.0.14",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
+  },
+  "dependencies": {
+    "pyodide": "^314.0.5"
+  }
+}

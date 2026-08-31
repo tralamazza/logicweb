@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>logicweb</title>
+  <link rel="stylesheet" href="/src/ui/style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="toolbar">
+      <button id="transport" class="primary" title="Start a capture on the connected device">Start</button>
+      <button id="btn-open" title="Load a sigrok .sr session or a .lwcap">Open…</button>
+      <button id="btn-save" title="Save this capture as .lwcap">Save</button>
+      <button id="btn-fit" title="Zoom to the whole capture">Fit</button>
+      <span id="capture-title">no capture</span>
+      <span class="spacer"></span>
+    </div>
+
+    <div id="main">
+      <div id="labels-col">
+        <div id="labels-spacer"></div>
+        <div id="channel-list"></div>
+      </div>
+
+      <div id="plot-col">
+        <canvas id="axis"></canvas>
+        <div id="plot">
+          <div id="wave-stack"></div>
+          <div id="empty-hint">
+            No capture loaded.<br />
+            Open a .sr or .lwcap file, or connect the SLogic16 U3.
+          </div>
+        </div>
+      </div>
+
+      <div id="side-panel"></div>
+
+      <div id="rail">
+        <button class="rail-btn" id="rail-device" title="Device and capture settings">◈</button>
+        <button class="rail-btn" id="rail-analyzers" title="Protocol analyzers">≡</button>
+      </div>
+    </div>
+
+    <div id="status"></div>
+  </div>
+
+  <input id="file-input" type="file" multiple hidden
+         accept=".sr,.lwcap" />
+  <script type="module" src="/src/ui/main.ts"></script>
+</body>
+</html>

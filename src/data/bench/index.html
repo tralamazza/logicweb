@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>logicweb sample store bench</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; color: #ddd;
+                   font: 12px/1.45 ui-monospace, Menlo, monospace; }
+      pre { margin: 0; padding: 12px; height: 100%; overflow: auto; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <pre id="out"></pre>
+    <script>
+      // Relay load/parse failures of the module below. Without this, a bundle that fails
+      // to load leaves an idle renderer and a blank page, which looks exactly like a slow
+      // run and wastes ten minutes before anyone notices.
+      window.relay = function (m) {
+        try { navigator.sendBeacon('/log', m); } catch (e) { void e; }
+        var o = document.getElementById('out');
+        if (o) o.textContent += m + '\n';
+      };
+      addEventListener('error', function (e) {
+        window.relay('window error: ' + (e.message || e.type) + ' @ ' + (e.filename || '?') + ':' + (e.lineno || 0));
+      }, true);
+      addEventListener('unhandledrejection', function (e) {
+        window.relay('unhandled rejection: ' + e.reason);
+      });
+      window.relay('index.html parsed, requesting module');
+    </script>
+    <script type="module" src="./main.js" onerror="window.relay('module script failed to load')"></script>
+  </body>
+</html>

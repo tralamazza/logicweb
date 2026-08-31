@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SLogic16 U3 - WebUSB self test</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; padding: 24px;
+        background: #14161a; color: #d8dee9;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      h1 { font-size: 15px; margin: 0 0 4px; color: #eceff4; }
+      p.sub { margin: 0 0 20px; color: #7b8494; }
+      #connect {
+        font: 600 15px/1 ui-monospace, Menlo, monospace;
+        padding: 16px 28px; border-radius: 6px; border: 1px solid #4c78c8;
+        background: #2b4a7d; color: #eceff4; cursor: pointer;
+      }
+      #connect:hover { background: #365d9e; }
+      #connect[hidden] { display: none; }
+      #log { white-space: pre-wrap; word-break: break-word; }
+      .ok { color: #7fc98a; }
+      .bad { color: #e06c68; font-weight: 600; }
+      .warn { color: #dbb168; }
+      .dim { color: #7b8494; }
+      .hd { color: #8fb6e8; }
+    </style>
+  </head>
+  <body>
+    <h1>SLogic16 U3 - WebUSB self test</h1>
+    <p class="sub">
+      Streams from the real device. Nothing here is stubbed: if the hardware is
+      absent or misbehaves, this page fails loudly.
+    </p>
+    <button id="connect" hidden>Connect to SLogic16 U3</button>
+    <div id="log"></div>
+    <script type="module" src="./selftest.ts"></script>
+  </body>
+</html>

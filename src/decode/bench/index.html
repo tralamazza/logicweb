@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>logicweb decode bench</title>
+    <style>
+      body { font: 13px ui-monospace, Menlo, monospace; margin: 2rem; }
+      pre { background: #111; color: #eee; padding: 1rem; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>decode bench</h1>
+    <p>Stock libsigrokdecode <code>uart</code> decoder, run by Pyodide in a Web Worker.</p>
+    <pre id="out">running...</pre>
+    <script type="module" src="./bench.ts"></script>
+  </body>
+</html>

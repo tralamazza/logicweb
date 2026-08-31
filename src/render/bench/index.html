@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>logicweb render - fps bench</title>
+    <style>
+      html, body { margin: 0; background: #141415; color: #E0E0E0; font: 12px/1.5 ui-monospace, Menlo, monospace; }
+      canvas { display: block; }
+      /*
+       * #c2 is HIDDEN, not parked off-screen. It used to sit at left:-10000px, which meant
+       * the live-capture phase drew into a canvas the compositor never presented, so that
+       * phase measured the rAF cadence of an idle page. fps.ts now swaps `display` between
+       * #c and #c2 so whichever canvas is being timed is the one actually on screen.
+       */
+      #c2 { display: none; }
+      pre { padding: 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <canvas id="c2"></canvas>
+    <pre id="out">starting...</pre>
+    <script type="module" src="./fps.ts"></script>
+  </body>
+</html>

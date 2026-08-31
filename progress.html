@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>logicweb - gauntlet progress</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0d0f12; color:#d7dbe0; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; margin:0; padding:28px 32px; }
+  h1 { font-size:15px; font-weight:600; letter-spacing:.02em; margin:0 0 2px; color:#f2f4f7; }
+  .sub { color:#6b7280; margin-bottom:22px; }
+  table { border-collapse:collapse; width:100%; max-width:1100px; }
+  th { text-align:left; font-weight:500; color:#6b7280; padding:0 14px 7px 0; border-bottom:1px solid #1d2126; }
+  td { padding:9px 14px 9px 0; border-bottom:1px solid #15181d; vertical-align:top; }
+  .st { font-weight:600; }
+  .pending  { color:#4b5563; }
+  .building { color:#d9a441; }
+  .judging  { color:#5b9bd5; }
+  .won      { color:#3fb950; }
+  .lost     { color:#e5534b; }
+  .gap { color:#9aa4b0; max-width:520px; }
+  .n { color:#6b7280; }
+  .metrics { margin-top:26px; max-width:1100px; }
+  .metrics td:first-child { color:#9aa4b0; width:290px; }
+  .bar { color:#f2f4f7; }
+  .log { margin-top:26px; color:#6b7280; max-width:1100px; }
+  .log div { padding:2px 0; }
+  .t { color:#3d444d; }
+</style>
+<body>
+<h1>logicweb</h1>
+<div class="sub">device: Sipeed SLogic16 U3 (359f:3031) &nbsp;|&nbsp; <span id="upd"></span></div>
+
+<table>
+  <thead><tr><th>piece</th><th>state</th><th>rounds</th><th>biggest remaining gap (critic)</th></tr></thead>
+  <tbody id="pieces"></tbody>
+</table>
+
+<table class="metrics">
+  <thead><tr><th>measured number</th><th>result</th></tr></thead>
+  <tbody id="metrics"></tbody>
+</table>
+
+<div class="log" id="log"></div>
+
+<script>
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function tick() {
+  let s;
+  try { s = await (await fetch('status.json?' + Date.now())).json(); }
+  catch { document.getElementById('upd').textContent = 'status.json unreadable'; return; }
+
+  document.getElementById('pieces').innerHTML = (s.pieces || []).map(p => `
+    <tr><td>${esc(p.name)}</td>
+        <td class="st ${esc(p.state)}">${esc(p.state)}</td>
+        <td class="n">${esc(p.rounds ?? 0)}</td>
+        <td class="gap">${esc(p.gap || '')}</td></tr>`).join('');
+
+  document.getElementById('metrics').innerHTML = (s.metrics || []).map(m => `
+    <tr><td>${esc(m.name)}</td>
+        <td class="bar">${esc(m.ours ?? '-')}</td>
+        <td class="st ${esc(m.verdict || 'pending')}">${esc(m.verdict || 'pending')}</td></tr>`).join('');
+
+  document.getElementById('log').innerHTML = (s.log || []).slice(-40).reverse()
+    .map(l => `<div><span class="t">${esc(l.t)}</span>  ${esc(l.m)}</div>`).join('');
+
+  document.getElementById('upd').textContent = 'updated ' + (s.updated || '');
+}
+tick(); setInterval(tick, 3000);
+</script>

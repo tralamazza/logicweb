@@ -1,0 +1,306 @@
+/*
+ * The chrome. Every number here is measured off rendered output with
+ * src/ui/tools/measure-chrome.py - see src/ui/NOTES.md section 1 for the tables and
+ * src/ui/metrics.ts for the same values in TypeScript.
+ *
+ * Device px at dpr 2 in the comments, CSS px in the rules.
+ */
+
+:root {
+  --bg00: #141415;
+  --bg10: #1B1B1C;   /* plot, label column, toolbar   [MEASURED] */
+  --bg20: #212224;
+  --bg30: #2C2C2E;
+  --panel: #3A3A3E;  /* right rail, status bar        [MEASURED] */
+  --border-low: #303136;
+  --border-high: #57575E;
+  --text: #FFFFFF;
+  --text80: #E0E0E0;
+  --text50: #909091;
+  --accent: #775AD2;
+  --negative: #f52a66;
+  --stop: #db4c39;
+
+  /*
+   * These are TOTALS including the 1 px border, because `box-sizing: border-box` is on
+   * everything. The toolbar is 60 device px of content plus a 2 device px border,
+   * i.e. 30 + 1 = 31 CSS px total - writing 30 here made every band one CSS px short,
+   * which is exactly what the first measurement of our own screenshot caught.
+   */
+  --toolbar-h: 31px;   /* content device y 66..125, border 126..127 */
+  --axis-h: 30px;      /* content device y 128..185, border 186..187 */
+  --status-h: 40px;    /* border device y 1920..1921, content 1922..1999 */
+  --labels-w: 105px;   /* strip 0..9, bg 10..207, border 208..209 */
+  --rail-w: 47px;      /* border device x 3106..3107, content 3108..3199 */
+  --strip-w: 5px;      /* device x 0..9 */
+  --panel-w: 296px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg10);
+  color: var(--text80);
+  font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ---------------------------------------------------------------- toolbar */
+
+#toolbar {
+  height: var(--toolbar-h);
+  min-height: var(--toolbar-h);
+  background: var(--bg10);
+  border-bottom: 1px solid var(--border-high);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+}
+
+#toolbar .spacer { flex: 1; }
+
+#toolbar button, .pill, .mini, .primary, .danger, .seg {
+  background: var(--bg20);
+  color: var(--text80);
+  border: 1px solid var(--border-low);
+  border-radius: 3px;
+  padding: 3px 9px;
+  font: inherit;
+  cursor: pointer;
+}
+#toolbar button:hover, .pill:hover, .mini:hover { background: var(--panel); }
+button:disabled { opacity: 0.45; cursor: default; }
+.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.danger { background: var(--stop); border-color: var(--stop); color: #fff; }
+.mini { padding: 1px 6px; font-size: 11px; }
+
+#transport {
+  font-size: 13px;
+  min-width: 74px;
+}
+#capture-title { color: var(--text50); }
+
+/* ---------------------------------------------------------------- main row */
+
+#main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+#labels-col {
+  width: var(--labels-w);
+  min-width: var(--labels-w);
+  background: var(--bg10);
+  border-right: 1px solid var(--border-high);
+  display: flex;
+  flex-direction: column;
+}
+
+/* The label column starts BELOW the axis: [MEASURED] the axis strip spans only the plot
+   area and the corner above the labels is plain background. */
+#labels-spacer {
+  height: var(--axis-h);
+  min-height: var(--axis-h);
+  border-bottom: 1px solid var(--border-low);
+}
+
+#channel-list { flex: 1; overflow: hidden; }
+
+.ch-cell {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 2px solid var(--border-high);  /* 4 device px [MEASURED] */
+  overflow: hidden;
+  cursor: grab;
+}
+.ch-cell.dragging { opacity: 0.4; }
+.ch-cell.drop-target { outline: 1px solid var(--accent); outline-offset: -1px; }
+.ch-cell.disabled { opacity: 0.4; }
+
+.ch-strip { width: var(--strip-w); min-width: var(--strip-w); }
+
+.ch-body {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 4px 0 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+.ch-head { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.ch-enable { margin: 0; width: 11px; height: 11px; accent-color: var(--accent); }
+.ch-tag { font-size: 11px; min-width: 22px; }
+
+.ch-name {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--text80);
+  font: inherit;
+  padding: 0 2px;
+}
+.ch-name:hover { border-color: var(--border-low); }
+.ch-name:focus { outline: none; border-color: var(--accent); background: var(--bg00); }
+
+.ch-analyzer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--text50);
+  line-height: 12px;
+  padding-left: 14px;
+}
+.ch-analyzer-sq {
+  width: 7px; height: 7px; border-radius: 1px; display: inline-block; flex: none;
+}
+.ch-analyzer span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-analyzer-x {
+  background: none; border: none; color: var(--text50); cursor: pointer;
+  padding: 0 2px; font-size: 11px; line-height: 1;
+}
+.ch-analyzer-x:hover { color: var(--negative); }
+
+/* ---------------------------------------------------------------- plot */
+
+#plot-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+#axis {
+  height: var(--axis-h);
+  min-height: var(--axis-h);
+  width: 100%;
+  display: block;
+  border-bottom: 1px solid var(--border-low);   /* [MEASURED] #303136, not #57575E */
+  cursor: ew-resize;
+}
+
+#plot {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg10);
+  cursor: crosshair;
+}
+
+#wave-stack { position: absolute; inset: 0; }
+.wave-canvas { display: block; width: 100%; }
+
+/*
+ * The grid canvas composites with `lighten`, so where a gridline meets a trace or a row
+ * separator the brighter pixel wins. See
+ * src/ui/overlay.ts for the evidence.
+ */
+.grid-canvas {
+  position: absolute; inset: 0; pointer-events: none;
+  mix-blend-mode: lighten;
+}
+.overlay-canvas { position: absolute; inset: 0; pointer-events: none; }
+
+#empty-hint {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text50); pointer-events: none; text-align: center; line-height: 1.6;
+}
+
+/* ---------------------------------------------------------------- side panel + rail */
+
+#side-panel {
+  width: var(--panel-w);
+  min-width: var(--panel-w);
+  background: var(--bg20);
+  border-left: 1px solid var(--border-high);
+  overflow-y: auto;
+}
+#side-panel.hidden { display: none; }
+
+#rail {
+  width: var(--rail-w);
+  min-width: var(--rail-w);
+  background: var(--panel);
+  border-left: 1px solid var(--border-high);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 8px;
+  gap: 4px;
+}
+.rail-btn {
+  width: 34px; height: 34px;
+  background: none; border: none; border-radius: 4px;
+  color: var(--text50); cursor: pointer; font-size: 15px;
+}
+.rail-btn:hover { background: #4a4a4f; color: var(--text80); }
+.rail-btn.on { background: var(--bg20); color: var(--text); }
+
+.panel-head { padding: 12px 12px 10px; border-bottom: 1px solid var(--border-low); }
+.panel-title { font-size: 15px; color: var(--text); margin-bottom: 4px; }
+.panel-sub { font-size: 11px; color: var(--text50); margin-bottom: 8px; line-height: 1.4; }
+.panel-section { border-bottom: 1px solid var(--border-low); padding: 10px 12px; }
+.panel-section-head {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+  font-weight: 600; color: var(--text);
+}
+.panel-section-head span:first-child { flex: 1; }
+.panel-section-body { display: flex; flex-direction: column; gap: 8px; }
+.panel-note { font-size: 10px; color: var(--text50); line-height: 1.5; white-space: pre-wrap; }
+.panel-note.error { color: var(--negative); }
+.panel-note.live { color: var(--text80); }
+
+.chip-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+.chip {
+  height: 22px; border-radius: 3px; border: 1px solid var(--border-low);
+  background: var(--bg10); font: 11px/1 inherit; cursor: pointer;
+}
+
+.field-row { display: flex; gap: 8px; }
+.field { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.field label { font-size: 10px; color: var(--text50); }
+.field select, .field input {
+  background: var(--bg10); color: var(--text80);
+  border: 1px solid var(--border-low); border-radius: 3px;
+  padding: 4px 6px; font: inherit; width: 100%;
+}
+
+.segmented { display: flex; }
+.seg { flex: 1; border-radius: 0; }
+.seg:first-child { border-radius: 3px 0 0 3px; }
+.seg:last-child { border-radius: 0 3px 3px 0; }
+.seg.on { background: var(--text80); color: var(--bg00); }
+
+.analyzer-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.analyzer-name { min-width: 54px; }
+.analyzer-status { flex: 1; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- status bar */
+
+#status {
+  height: var(--status-h);
+  min-height: var(--status-h);
+  background: var(--panel);
+  border-top: 1px solid var(--border-high);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text80);
+}
+#status .sep { color: var(--text50); }
+#status .right { margin-left: auto; }
+#status .err { color: var(--negative); }

@@ -1,0 +1,431 @@
+{
+  "updated": "device dropouts are wired end to end: filler appended so store time tracks device time, span marked as a gap, count surfaced in the capture panel. Hardware has still never produced a short transfer",
+  "pieces": [
+    {
+      "name": "live capture (WebUSB, SLogic16 U3)",
+      "state": "won",
+      "rounds": 2,
+      "gap": "18/18 on hardware; 400 MB/s reproduced at 4, 8 and 16 channels. Remaining: live-edge capture vs native path, blocked on stimulus generator contention"
+    },
+    {
+      "name": "sample store + multiresolution query",
+      "state": "won",
+      "rounds": 2,
+      "gap": "3.51 ms/frame at the real 3200-column operating point on planar; new RleSampleStore for imports measures 0.80 ms on the 120 s capture, 2.08 ms dense worst case. Import load went from O(samples) to O(edges). NOT like-for-like: the 528 ms -> 18 ms figure compares the old planar build at 1 MSa/s against the edge-store build at 10 MSa/s, and 0.80 vs 3.51 ms is drawn from two different captures (planar cannot hold bin120 at 10 MSa/s). Same-capture control on reference/data/bin, 3200 cols x 16 ch: planar 1.84 ms, RLE 0.63 ms = 2.9x. Direction unambiguous, ratios inflated"
+    },
+    {
+      "name": "waveform rendering",
+      "state": "won",
+      "rounds": 2,
+      "gap": "per-row heights done, saturation settled at exact 1.0000 on all 16 channels, false claims struck"
+    },
+    {
+      "name": "pan and zoom",
+      "state": "won",
+      "rounds": 2,
+      "gap": "closed by scope decision: 60 Hz is the requirement, both apps sit at 120 and are vsync-limited"
+    },
+    {
+      "name": "channel and timing UI",
+      "state": "judging",
+      "rounds": 1,
+      "gap": "chrome geometry settled; .sr sessions now load (d0659e6); trigger config still stubbed"
+    },
+    {
+      "name": "cursors and measurement",
+      "state": "judging",
+      "rounds": 1,
+      "gap": "A/B cursors and hover readout working; multi-bubble merging never exercised by a dense capture"
+    },
+    {
+      "name": "protocol decoding",
+      "state": "won",
+      "rounds": 2,
+      "gap": "both blockers cleared: harness widened and mutation-verified, decode bounded and cancellable in 62 ms. UART/SPI/I2C now on real signal"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "pan/zoom fps, 100M samples x 16ch",
+      "ours": "120.5 fps vsync-capped, 0.0% dropped; 200 fps uncapped"
+    },
+    {
+      "name": "seconds to interactive waveform",
+      "ours": "browser, app-side: 11 ms median at 5 s (10-17), 30 ms at 120 s (28-71) - CDP wall agrees (13/30)"
+    },
+    {
+      "name": "decoder count (breadth)",
+      "ours": "125 byte-identical incl. class and full text variants; 125 on real signal, 86 non-empty"
+    },
+    {
+      "name": "sustained WebUSB throughput, every capture width",
+      "ours": "399.4 MB/s @ 16ch/200MHz, 398.3 @ 8ch/400MHz, 399.5 @ 4ch/800MHz - all three widths are the same 400 MB/s wire budget and all hold it, 0 short transfers in 1142-1143 transfers each. At 4ch the sink also absorbs 799 MB/s post-expansion (sink/raw = 2.0000 exactly)"
+    },
+    {
+      "name": "decode latency, Logic-2-shaped 5s x 16ch",
+      "ours": "13-18 ms warm (i2c), 41-46 ms warm (spi); ~870 ms cold"
+    },
+    {
+      "name": "decode of dense real traffic, 5s saturated UART",
+      "ours": "7089 ms, cancellable, watchdog-bounded"
+    },
+    {
+      "name": "frame time tail (the discriminating measure)",
+      "ours": "zoom sweep 1.67% of frames over budget, max 10.4 ms (measured with a working detector)"
+    }
+  ],
+  "log": [
+    {
+      "t": "00:00",
+      "m": "device verified on bus: bDeviceClass 255, vendor class, no kernel driver bound - WebUSB claim should succeed"
+    },
+    {
+      "t": "00:01",
+      "m": "protocol distilled from libsigrok driver into docs/PROTOCOL-SLOGIC16U3.md"
+    },
+    {
+      "t": "00:01",
+      "m": "module contracts fixed in docs/ARCHITECTURE.md"
+    },
+    {
+      "t": "00:14",
+      "m": "native control: 391 MB/s at 16ch/200MHz via local libsigrok build - device and link are fine"
+    },
+    {
+      "t": "00:14",
+      "m": "SPEC BUG FOUND: aux payload length must NOT be rounded down to 4; real lengths are 2,8,2,1 - rounding down silently no-ops 3 of 4 settings. docs corrected"
+    },
+    {
+      "t": "00:14",
+      "m": "BLOCKER: probes read constant 0x00b2 - test source is on USB but not wired to the analyzer. No live-edge cross-check until someone connects them"
+    },
+    {
+      "t": "00:14",
+      "m": "substitute control: device Emulation pattern, deterministic over 3 runs, fingerprint 0700 0600 0500 at 16ch"
+    },
+    {
+      "t": "00:22",
+      "m": "RETRACTED: probes ARE connected. The constant reading was a capture taken while picolyzer sat at mode=stopped - it emits nothing until commanded"
+    },
+    {
+      "t": "00:22",
+      "m": "control established: square 0 1M -> exactly 0xb201/0xb200, 50000 each. GP_k maps to bit k, no byte swap"
+    },
+    {
+      "t": "00:22",
+      "m": "walk 100k 16: ch0-7 and ch14 follow the source; ch8,10,11 stuck low; ch9,12,13,15 stuck high (floating). Judge on ch0-7 for now"
+    },
+    {
+      "t": "00:22",
+      "m": "independent corroboration of the payload-length finding: native driver logs 'Align up to 4 (from 2)' on every aux write"
+    },
+    {
+      "t": "00:31",
+      "m": "HARDWARE RUN CONFIRMED: WebUSB sustains 399.57 MB/s at 16ch/200MHz, shortTransfers 0, emulation head byte-exact vs native driver"
+    },
+    {
+      "t": "00:31",
+      "m": "builder prediction P3 FALSIFIED: predicted 150-250 MB/s peak and >20% short at 200MHz; actual 399.57 vs 400 offered, 0.1% short. Reasoning behind it was wrong"
+    },
+    {
+      "t": "00:31",
+      "m": "browser held 199.97 MB/s at 16ch/100MHz where the NATIVE driver collapsed to 99.46 - the anomaly is libsigrok transfer sizing, not the device"
+    },
+    {
+      "t": "00:31",
+      "m": "critic confirmed expandPacked, head-drop carry and samplerate arithmetic correct against api.c. 9 defects sent back for round 2"
+    },
+    {
+      "t": "00:48",
+      "m": "device round 2 re-run on hardware: 15/15 pass, 0 failures, throughput reproduced at 399.14 MB/s"
+    },
+    {
+      "t": "00:48",
+      "m": "builder mutation-checked its new tests: reverting drain() and making the head-drop per-transfer each turn them red"
+    },
+    {
+      "t": "00:48",
+      "m": "CONTENTION: picolyzer stimulus generator is a single shared serial device and the decode builder is now driving it (mode=pattern-loop, 1500 samples). Live-edge verification deferred rather than commandeering it"
+    },
+    {
+      "t": "00:48",
+      "m": "note: the selftest head dump is 32 bytes = 16 samples = 1us at 16 MSa/s, too short to show a slow pattern. Not evidence of missing edges"
+    },
+    {
+      "t": "01:20",
+      "m": "BAR FALSIFIED A PREDICTION: 23x file size changed a mature commercial tool open time by 3%. The bar is not 'beat 150ms', it is '~150ms flat, independent of capture size'"
+    },
+    {
+      "t": "01:20",
+      "m": "BLOCKED: no screenshots and no fps number - the terminal lacks Screen Recording and Accessibility. All appearance claims tagged UNVERIFIED"
+    },
+    {
+      "t": "01:20",
+      "m": "reference agent self-corrected two claims that would have shipped false: a config backup that never existed, and stale counts after a re-run overwrote the exports"
+    },
+    {
+      "t": "01:55",
+      "m": "sample store: planar bit-planes beat interleaved on measurement, not argument. Memory a dead tie at 228 MB; planar wins queries 2.7x and edges() 69x"
+    },
+    {
+      "t": "01:55",
+      "m": "measured 229 MB actual vs 228.2 MB accounted - the memory model checks out against the browser"
+    },
+    {
+      "t": "01:55",
+      "m": "prediction P4 MISSED reproducibly: predicted <3x for 1000x samples, got 3.10-3.99x. Not an O(bins) failure - cache locality. Builder says it should have predicted a memory-hierarchy factor"
+    },
+    {
+      "t": "01:55",
+      "m": "narrow-glitch test asserts ALL 1000 columns, not just the pulse's - a test that only checked the pulse column would pass a renderer that flags everything"
+    },
+    {
+      "t": "01:55",
+      "m": "suite caught a real bug of the feared shape: maskTo(31) overflowing to a double, producing a phantom edge on a channel that never moved"
+    },
+    {
+      "t": "01:55",
+      "m": "CAUTION: agent contention corrupts timings badly - a 1.11ms frame measured 9.59ms. Bench now best-of-5 with a stability re-check. The fps metric must be measured on a quiet machine"
+    },
+    {
+      "t": "01:55",
+      "m": "contract gap closed: ColumnView was undefined in ARCHITECTURE.md, now defined and relayed to the renderer"
+    },
+    {
+      "t": "02:40",
+      "m": "data critic: could NOT break the correctness claims - built its own brute-force reference, 11 unused glitch patterns, boundary sweeps, all pass. Design decision stands"
+    },
+    {
+      "t": "02:40",
+      "m": "data critic: the head-to-head table divides planar-in-node by interleaved-in-browser. Real advantages are ~half: 2.0x not 2.7x, edges() 37x not 69x. P6 is an unrecorded MISS"
+    },
+    {
+      "t": "02:40",
+      "m": "bench does rm -rf on its output dir every run, so no artifact survives to be audited. Repo has zero git commits, so 'predictions written beforehand' has no evidence behind it"
+    },
+    {
+      "t": "02:40",
+      "m": "query(0, NaN, 5000, 100) returns low=1 high=0 - minimum above maximum - and paints a clean flat waveform. Renderer is protected only by accident"
+    },
+    {
+      "t": "02:40",
+      "m": "mutation testing: pyramid levels 6-7 can be built as garbage with the suite still reporting 40/40. Critic built the missing coverage and found no bug - a hole, not a defect"
+    },
+    {
+      "t": "02:40",
+      "m": "critic retracted two of its own priors: memory accounting is NOT circular (re-derived 228.2 MB independently), and best-of-5 is NOT hiding a tail (max/statistic under 1.56x)"
+    },
+    {
+      "t": "03:35",
+      "m": "renderer: 120.5 fps at 100M x 16ch, 3200x1440 device px, 0.0% dropped across all five phases. Display is 120Hz so that is vsync, not our ceiling"
+    },
+    {
+      "t": "03:35",
+      "m": "renderer's OWN cost is 3-6 us/frame; store.query is 4.1 ms. If fps needs to improve the work is in src/data, not src/render"
+    },
+    {
+      "t": "03:35",
+      "m": "SCREENSHOTS FALSIFIED 3 RENDERER DEFAULTS: background #141415 should be #1B1B1C; there IS a row separator it had declined to invent; rows/gutter 45/16 should be 49/8"
+    },
+    {
+      "t": "03:35",
+      "m": "after correction every geometric property matches exactly - row pitch 98, idle line 2 device px, transition bar 1 device px, no AA - max colour delta 1/255"
+    },
+    {
+      "t": "03:35",
+      "m": "two predictions fell: P2 half (linear scaling of query cost is the wrong model - it lands on a different pyramid level), P4 fully (zoom level dominates frame cost 4.2x, not 1.5x)"
+    },
+    {
+      "t": "03:35",
+      "m": "methodology catch: the fps stability check could not detect contention because fps is vsync-pinned. Switched to CPU time, which reads 9.1% drift where fps reads 0.0%"
+    },
+    {
+      "t": "03:35",
+      "m": "OPEN DISCREPANCY: a mature commercial tool's 120s zoom-out is 100.00% solid; ours lights 79.07% of columns, which matches the export's transition count exactly. Likely different captures, not a rendering defect"
+    },
+    {
+      "t": "04:20",
+      "m": "decode critic: conformance harness destructures away the annotation class and all text variants past the first - so 'byte-identical' covers 2 of the 4 fields, and those 2 blind fields are exactly what the renderer consumes"
+    },
+    {
+      "t": "04:20",
+      "m": "proved by mutation: forcing every annotation class to 0, and dropping every text variant, both leave the harness 6/6 green"
+    },
+    {
+      "t": "04:20",
+      "m": "no timeout, no cancel anywhere. A 5s saturated UART capture spends 6.9s inside one un-interruptible runPython call. libsigrokdecode ships srd_session_terminate_reset and Pyodide ships setInterruptBuffer; neither is used"
+    },
+    {
+      "t": "04:20",
+      "m": "memory ceiling measured at ~80M edges (29-35 bytes/edge against a 4 GB wasm32 space) and past it the failure is silent heap corruption, not a clean OOM"
+    },
+    {
+      "t": "04:20",
+      "m": "34% of decode wall time is spent marshalling channels no decoder reads; supplying empty arrays for them cuts 12.49s to 8.26s with byte-identical output"
+    },
+    {
+      "t": "04:20",
+      "m": "32-bit sample ceiling undocumented: Int32Array throughout means 2^31 samples, which at this device's 200 MSa/s is a 10.7 SECOND capture"
+    },
+    {
+      "t": "04:20",
+      "m": "the 125 figure is a union across two eof modes; in the mode the product actually ships, it is 124 and 'parallel' disagrees with sigrok-cli"
+    },
+    {
+      "t": "04:20",
+      "m": "critic verified 131 decoders are genuinely unmodified stock (diff -r against upstream 71f4514, zero content differences) and that wait() semantics survive 28/28 adversarial cases byte-identical"
+    },
+    {
+      "t": "05:30",
+      "m": "RETRACTED: channels 8-15 were never floating. They are wired to the generator's protocol pins sitting at idle levels - UART idles high, SPI mode 0 idles low, CS active-low idles high, I2C idles released. Seven for seven"
+    },
+    {
+      "t": "05:30",
+      "m": "real channel map measured: D8=GP16 marker, D9=GP17 UART, D10/11/12=SPI SCK/MOSI/CS, D13=SCL, D14=GP8, D15=SDA. GP9-15 and GP18 genuinely unprobed"
+    },
+    {
+      "t": "05:30",
+      "m": "crosstalk theory on D14 killed: driving GP8 alone gave exactly 12500 edges on D14 at 1 MHz with zero activity elsewhere. It is a real wire"
+    },
+    {
+      "t": "05:30",
+      "m": "UART/SPI/I2C captured through the analyzer on STOCK firmware and decoded correctly: 'Hello', de ad be ef, and an I2C write to 0x50. No firmware change was needed"
+    },
+    {
+      "t": "05:30",
+      "m": "captures preserved in reference/hwcaptures/ and independently re-decoded before the agent's /tmp copies could be cleaned"
+    },
+    {
+      "t": "06:10",
+      "m": "data round 2: all advantages corrected DOWN - query 2.7x->1.93x, edges() idle 69x->34.1x, sparse 36x->17.1x. Planar's absolutes barely moved; the inflation was entirely in the denominators"
+    },
+    {
+      "t": "06:10",
+      "m": "it also corrected a figure in its own disfavour: interleaved's win at 1000 columns was published as 1.2x, actually 1.85x"
+    },
+    {
+      "t": "06:10",
+      "m": "real operating point measured: 0.87 ms/frame at 1000 columns, 3.51 ms at 3200 - consistent with the renderer's independently measured 4.1 ms"
+    },
+    {
+      "t": "06:10",
+      "m": "OPEN CONFLICT: renderer measured full zoom-out at 4.2x the pan phase; the store measures 1.2x at 3200 columns and 0.7x at 1000, i.e. panning is worse at 1000. Unresolved, flagged by both sides"
+    },
+    {
+      "t": "06:10",
+      "m": "bench no longer deletes anything - both rm -rf lines removed, timestamped run directories, artifacts retained. Two runs now on disk"
+    },
+    {
+      "t": "06:10",
+      "m": "instrument correction: its new absolute machine reference was itself confounded by JIT tier on first use (17.8 ms -> 1.3 ms). A residual phase-1/phase-2 gap it could NOT isolate is handled by never dividing across phases"
+    },
+    {
+      "t": "07:05",
+      "m": "SATURATION SETTLED: against the 120s capture the screenshot actually shows, we saturate to exact 1.0000 on all 16 channels, identical to a mature commercial tool. There was never a discrepancy - it was our 5s render against their 120s screenshot"
+    },
+    {
+      "t": "07:05",
+      "m": "ZOOM-VS-PAN CONFLICT RESOLVED: renderer WITHDREW its 4.2x. It had compared a static 100M redraw against a panning 1M view - two variables. With pan rate and columns fixed it is 1.7x, matching the store's shape"
+    },
+    {
+      "t": "07:05",
+      "m": "drop detector fixed and controlled: injecting a 10ms stall into 10% of frames, the old criterion reported 0.00% and the new one reports 10.0%. Real figure is 1.67% of zoom frames over budget"
+    },
+    {
+      "t": "07:05",
+      "m": "per-row heights implemented; measure-screenshot.py's mode() bug fixed - it had printed '98 vs 98 match' for a screenshot containing 13 rows at 98 and 2 at 138"
+    },
+    {
+      "t": "07:05",
+      "m": "store.query cross-checked: renderer reads 3.42-3.61 ms, data builder independently measured 3.51 ms through a different path"
+    },
+    {
+      "t": "07:05",
+      "m": "contention gate now flags CONTENDED on both recent runs (15.1%, 25.6%), so all absolute ms figures are marked indicative rather than certified"
+    },
+    {
+      "t": "08:15",
+      "m": "MUTATION VERIFIED: forcing every annotation class to 0 now turns the harness RED, as does dropping text variants. Both left the old harness 6/6 green. Exit code non-zero on mismatch"
+    },
+    {
+      "t": "08:15",
+      "m": "THREE HARNESS BUGS found while widening it, all silently weakening results: a watchdog storing Date.now() in an Int32Array (wraps, fired instantly), a worker using require() in an ESM package (died at startup, so no timeout existed), and a json.dumps that CORRUPTED millions of annotations - previously misreported as 3 shim failures"
+    },
+    {
+      "t": "08:15",
+      "m": "decode is now bounded and cancellable: cancel honoured in 62 ms via Pyodide's interrupt buffer, worker reusable afterwards, terminate() no longer one-way"
+    },
+    {
+      "t": "08:15",
+      "m": "throughput dispute settled by measuring both sides on the same 5s workload: 7089 ms browser vs 2300 ms native = 3.0x. The old 2.3x came from a capture 10x smaller"
+    },
+    {
+      "t": "08:15",
+      "m": "honest limit stated rather than implied: texts[1..n] is not observable in any sigrok-cli output, so variants are checked against literal lists parsed from upstream .py at put() call sites, not differentially"
+    },
+    {
+      "t": "08:15",
+      "m": "builder disagreed with its own earlier work: describe() no longer synthesizes annotation_rows, because libsigrokdecode returns an empty list when the member is absent. The old synthesis was an invention"
+    },
+    {
+      "t": "09:40",
+      "m": "THE APPLICATION EXISTS. Live capture from the SLogic16 U3 through the browser: 16ch at 16 MSa/s, 4,800,000 samples in 460 ms, live edge followed while streaming"
+    },
+    {
+      "t": "09:40",
+      "m": "decoder on REAL signal end to end: i2c on D13/D15 gave 2,178 annotations in 22 ms, bubble reads 'Address write: 50' against a generator commanded i2c 100k 0x50 00 ff - known-answer match"
+    },
+    {
+      "t": "09:40",
+      "m": "key finding: a mature commercial tool inserts the annotation lane ABOVE the trace band and leaves the band height alone. Passing tall rows to the renderer would have stretched the trace in exactly the rows a critic checks"
+    },
+    {
+      "t": "09:40",
+      "m": "LOST on time-to-interactive: 167 ms at 5s (vs 146) but 528 ms at 120s (vs 151). The bar grows 1.03x with size, we grow 3.2x. Cause is architectural - we resample into a full store at load"
+    },
+    {
+      "t": "09:40",
+      "m": "chrome geometry verified band for band against a mature commercial tool, with a measuring tool carrying two controls: recover a known synthetic layout exactly, and detect a 20px shift"
+    },
+    {
+      "t": "03:31",
+      "m": "RLE import store landed: imports stay transitions instead of expanding into planar. Load O(edges) not O(samples) - bin120 store build 18.2 ms vs 3169.9 ms planar, byte-identical edges and queries on both reference captures"
+    },
+    {
+      "t": "03:31",
+      "m": "bin120 no longer reduced: loads at its 10 MSa/s grid rate with a 1.2e9-sample virtual length (old 1 MSa/s clamp was the planar sample budget, which is gone for imports)"
+    },
+    {
+      "t": "03:31",
+      "m": "gap contract closed on the store/render side: SampleStore.noteGap + bit3 in ColumnView.packed; renderer draws NO_DATA for gap columns (shader + cpuRaster); edges() filters gap transitions. Data suite 28/28, four mutations each turn it red. Device dropout wiring still pending - noteGap has no live producer. Known hole: .lwcap save/load rebuilds levels from gap-filtered edges, so an odd edge count inside a gap inverts every level after it"
+    },
+    {
+      "t": "03:31",
+      "m": "open-time re-benchmarked in real Brave over CDP: 11 ms median at 5 s, 30 ms at 120 s (app-side performance.now), against a mature commercial tool's 146/151. The bar is beaten 5-13x and the 3.2x size-growth loss is dead. Report: /tmp/logicweb-ui/report.json"
+    },
+    {
+      "t": "03:31",
+      "m": ".lwcap v2 persists gap spans (magic LWCAP2, gapCount in the reserved slot); v1 files load as gapless; corrupt spans throw. Pinned by src/ui/tools/lwcap-selftest.ts (5/5, mutation-checked)"
+    },
+    {
+      "t": "03:31",
+      "m": "device reports mid-run short transfers as dropouts: start(cfg, sink, onDropout(samplePosition, missingSamples)). Offline harness pins the position at the END of the short transfer (255948 with 50 missing). Hardware still shows zero short transfers. NOT wired to the store: the lost samples are never appended, so the span has zero width in store coordinates and app.ts records nothing - noteGap has no live producer"
+    },
+    {
+      "t": "03:31",
+      "m": ".sr loader landed: sigrok sessions load into the edge store (zip reader, deflated + stored, v1/v2 naming, logic-only). All three hwcaptures open, and an independent 8N1 framer in the suite recovers the generator's 'Hello' from uart.sr's D9 - the whole zip->edges path is known-answer-proven. 12/12, mutation-checked"
+    },
+    {
+      "t": "16:43",
+      "m": "gap parity corruption fixed: saveLwcap and RleSampleStore.fromStore rebuilt channels from the gap-filtered edges(), so a gap swallowing an ODD number of edges inverted every level from the gap's end to the end of the capture - on known data the source store had right. Both now go through channelAcrossGaps (src/data/gaps.ts): ask the source store for the level at each gap's end, insert one synthetic edge at endSample-1 when the filtered list disagrees. MEASURED before: channels 1 and 2 (odd counts) inverted, the other 14 (even) did not; after: 0/2 and 0/14. Mutation-checked both ways - neutering the fixup turns both suites red, and placing the edge at endSample instead throws 'edges are not strictly increasing' because a real edge already sits there. Why it survived two rounds: both suites guarded with c1 <= G0 AND the data suite's channel list [0,5,12,15] had zero overlap with the odd-parity channels [1,2,11], so removing the guard alone left it green"
+    },
+    {
+      "t": "15:10",
+      "m": "throughput measured at every capture width, not just 16 ch. The three advertised ceilings (4x800, 8x400, 16x200 MS/s) are one 400 MB/s wire budget divided by the bit width, and the device holds it at all three: 399.4 / 398.3 / 399.5 MB/s, zero short transfers. PREDICTION FALSIFIED: I predicted 4ch@800MHz would fall short because expandPacked must unpack 400 MB/s of wire into 800 MB/s in a scalar JS loop. It does not - sink/raw is exactly 2.0000, so the loop really delivered 2.39 GB in 3.0 s = 799 MB/s. I asserted a cost was prohibitive without computing it (~5 cycles/iteration at 4 GHz). device/NOTES.md P3 records the identical error, so this is the second time; logged as P5. Still no WebUSB ceiling in evidence"
+    },
+    {
+      "t": "17:05",
+      "m": "dropout consumer wired (appendLostSamples in src/data/gaps.ts). It was dead for two rounds and the cause was structural, not a bad guard: with no samples appended the lost span has zero width in store coordinates, so there was nothing for noteGap to mark. Decision taken - append filler for the lost samples so the store's axis keeps tracking device time. The filler repeats the LAST KNOWN SAMPLE rather than zeroing; zeros invent a rising edge at the gap's end, which sits outside the gap where edges() reports it as real (MEASURED: exactly 16 spurious edges, 1 per channel). Pinned end to end in offline-test.ts: 383948 delivered + 50 lost = store length 383998, one gap at [255948, 255998). Mutation-checked both ways - zeroed filler turns the edge check red, skipping the append throws 'gap [255948,255998) outside 0 <= start < end <= 255948', which is the zero-width problem stating itself. Lost-sample count now shows in the capture panel while recording. Hardware has still never produced a short transfer, so this runs only against the scripted device"
+    }
+  ]
+}
