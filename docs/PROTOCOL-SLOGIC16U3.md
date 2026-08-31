@@ -1,9 +1,9 @@
 # Sipeed SLogic16 U3 - USB protocol
 
 Distilled from the working libsigrok driver at
-`/Users/tralamazza/github/sigrokproject/libsigrok/src/hardware/sipeed-slogic-analyzer/`
-(`api.c`, `protocol.c`). That driver is the ground truth. If anything here disagrees with
-it, the driver wins - go read it, do not guess.
+`src/hardware/sipeed-slogic-analyzer/` (`api.c`, `protocol.c`) in a libsigrok checkout -
+see https://sigrok.org/wiki/Libsigrok. That driver is the ground truth. If anything here
+disagrees with it, the driver wins - go read it, do not guess.
 
 Verified on the attached unit (`ioreg -p IOUSB -l`):
 
@@ -197,7 +197,7 @@ at `mode=stopped`, which is its idle state. It emits nothing until commanded. St
 first:
 
 ```sh
-cd /Users/tralamazza/github/tralamazza/picolyzer-tester
+cd <picolyzer-tester checkout>
 python3 tools/console.py "walk 100k 16" "status"     # or square/uart/spi/i2c
 ```
 

@@ -2,11 +2,11 @@
 
 Hardware: Sipeed SLogic16 U3, `359f:3031`, USB 3.0 SuperSpeed, attached to this machine.
 Native control: the libsigrok driver in
-`/Users/tralamazza/github/sigrokproject/libsigrok/src/hardware/sipeed-slogic-analyzer/`, run
-through the Homebrew `sigrok-cli` with the locally built library:
+`$LIBSIGROK/src/hardware/sipeed-slogic-analyzer/`, run through the Homebrew `sigrok-cli`
+with the locally built library, where `$LIBSIGROK` is a libsigrok checkout:
 
 ```
-DYLD_LIBRARY_PATH=/Users/tralamazza/github/sigrokproject/libsigrok/.libs \
+DYLD_LIBRARY_PATH=$LIBSIGROK/.libs \
   sigrok-cli -d sipeed-slogic-analyzer --config samplerate=16m --samples 1m -o /tmp/ref.sr
 ```
 
