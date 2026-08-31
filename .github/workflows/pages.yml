@@ -1,0 +1,98 @@
+# Build and publish the static app to GitHub Pages.
+#
+# The build happens in CI rather than being committed, because the two runtime assets -
+# 13 MB of Pyodide and the sigrok decoder tree - are gitignored on purpose (see
+# .gitignore). Committing them to a gh-pages branch would put third-party binaries in
+# this repo's history, which is what `npm run vendor` exists to avoid.
+#
+# Nothing here is pushed to a branch: upload-pages-artifact + deploy-pages publish the
+# built tree directly, and that path never runs Jekyll over it.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it: a half-published site is worse
+# than a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Pinned, not master. `npm run vendor` regenerates src/decode/decoders/manifest.ts,
+      # which IS committed; tracking master would let the decoder set drift away from the
+      # committed manifest with no signal. Bump this deliberately, re-run
+      # `npm run vendor`, and commit the manifest change with it.
+      #
+      # Verified: this ref regenerates the committed manifest.ts byte-for-byte.
+      LIBSIGROKDECODE_REF: 71f451443029322d57376214c330b518efd84f88
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Fetch the sigrok decoders
+        run: |
+          git clone --quiet https://github.com/sigrokproject/libsigrokdecode lsd
+          git -C lsd checkout --quiet "$LIBSIGROKDECODE_REF"
+
+      # Stages public/pyodide/ and public/decoders/decoders.zip, and rewrites
+      # src/decode/decoders/manifest.ts. Needs `zip` and `python3`, both on the runner.
+      - name: Vendor the runtime assets
+        run: npm run vendor -- lsd/decoders
+
+      # The manifest is committed, so a drifting decoder set must fail here rather than
+      # ship a UI listing decoders that the bundled zip does not contain.
+      - name: Check the committed manifest still matches
+        run: git diff --exit-code -- src/decode/decoders/manifest.ts
+
+      # A project page lives at https://<owner>.github.io/<repo>/, so every absolute URL
+      # the app builds at run time has to carry that prefix - see the BASE_URL comment in
+      # src/decode/worker.ts. A user/org page (<owner>.github.io) is served at the domain
+      # root and takes a plain '/'.
+      - name: Work out the base path
+        id: base
+        run: |
+          repo='${{ github.event.repository.name }}'
+          owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          if [ "$(echo "$repo" | tr '[:upper:]' '[:lower:]')" = "$owner.github.io" ]; then
+            echo "path=/" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=/$repo/" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        run: npm run build -- --base='${{ steps.base.outputs.path }}'
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

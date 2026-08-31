@@ -1,0 +1,11 @@
+Deployed as static files, not a Jekyll site.
+
+GitHub Pages runs Jekyll over the published tree unless this file exists, and Jekyll
+drops anything whose name starts with an underscore. Nothing Vite emits starts with one
+today, so this is insurance rather than a fix for a live bug - but the failure it guards
+against is a silent 404 on one asset, which is exactly the shape of bug that costs an
+afternoon.
+
+The Actions deployment used by .github/workflows/pages.yml publishes the artifact as-is
+and never invokes Jekyll, so this only matters if the repo is ever switched to the older
+"deploy from a branch" setting.
