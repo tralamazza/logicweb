@@ -1,5 +1,9 @@
 # 交接文档：32U3 采集、软件触发与传输层优化
 
+> **2026-09-14 增补（接手修复轮）**：在本文档描述的 5 个提交之上又做了一轮缺陷修复，
+> 见文末「10. 接手修复轮（2026-09-14）」。原第 6 节的"次要观察"第 2 条所描述的
+> 触发模式投递路径中，实际存在两个用户可见的缺陷，已修复并有回归测试。
+
 ## 1. 概览
 
 本分支把此前 66 个迭代提交按功能重写为 5 个关键提交，只改变提交粒度，代码与文档内容不变。
@@ -144,3 +148,70 @@ git show --stat <sha>                          # 单个提交的范围
 git diff origin/main...HEAD                    # 本次全部改动
 npm run check && npm run build                 # 类型检查 + 构建
 ```
+
+## 10. 接手修复轮（2026-09-14）
+
+按用户报告修复三类问题，全部有确定性回归（`offline-test.ts` 新增 6 项 check）。
+
+### 10.1 定时采集卡在 ~99%（如 1 s 卡在 990 ms）
+
+两个叠加的原因，都在传输层的"采集自然结束"路径上：
+
+1. 高线速率下 `SINK_CHUNK_BYTES = 8 MiB` 的合并缓冲：设备按 `R32_SAMPLE_LEN`
+   自停后，最后不足一个块的尾部一直留在 `sinkBuffer` 里，只有 stop() 才 flush。
+   8 MiB 在 32ch/200M 下恰好是 ~10 ms —— 正是"1 s 卡在 990 ms"。
+2. 设备自停没有任何通知，UI 只能靠 `store.length >= captureLimitSamples` 判停，
+   差着缓冲里的尾部永远到不了。
+
+修复：`slogic16u3.ts` 新增 `maybeEndCapture()` —— 每次投递后检查
+`deviceReachedItsLimit()` 或触发预算打满（`trigger.stats.complete`），命中则先
+`flushSink()` 再触发一次新的 `CaptureStartOptions.onEnd` 回调；worker 协议新增
+`{kind:'ended'}` 转发；UI 在 onEnd 里自动 stop。另外 UI 的 sink 在 `stopping`
+期间不再丢弃排空的尾部数据（此前手动 stop 的采集同样被截掉最多一个块）。
+
+### 10.2 软件触发在 worker 传输下损坏数据
+
+worker 的 sink 把每个 chunk 的 ArrayBuffer **transfer** 给页面（types.ts 约定
+sink 拥有该缓冲）。触发状态机命中后 emit 的是传输缓冲的 subarray 视图，emit 返回
+后 `feed()` 继续从**同一个已 detach 的缓冲**读 post-trigger 数据 → 实测直接抛
+`Cannot perform Construct on a detached ArrayBuffer`，读循环中止。页面内回退
+传输（同步 sink）不受影响，所以离线套件此前没抓到。
+
+修复：触发模式的 emit 包装器对"非完整缓冲的视图"先 `slice()` 拷贝再交给 sink；
+预触发环形缓冲的输出本来就是独立 `slice()`，不重复拷贝。拷贝量以捕获预算为上界。
+回归测试用"transfer 每个 chunk 的 sink"复现（`structuredClone(…, {transfer})`）。
+
+时间轴语义同时对齐：状态栏 A/B 游标改为以触发点为原点（触发前为负数时间），与
+时间轴/触发游标一致；capture 面板显示已武装的条件摘要、waiting/triggered/
+not-found 状态，以及"启用了 Enable Mask 但没设任何通道条件"的显式警告。
+
+### 10.3 布局自适应与触屏
+
+- `index.html`：labels 列 + 波形列包进 `#scroll-area`（纵向滚动），时间轴与左列
+  角块 sticky —— 通道行超出视口（手机、多通道）时可以滚到下面的通道。
+- 行高改按滚动视口高度自适应（`relayout` 用 `scroll-area` 高度，ResizeObserver
+  也观察它，避免"高度是输出又是输入"的循环）。
+- 左列收窄为 128 px（≤760 px 时 104 px）：默认通道名改为空，身份就是彩色 D 标签，
+  不再重复 "Channel 15"；加载文件时自动丢弃 "D3"/"Channel 3"/"3" 这类自动名。
+- 窄屏（≤760 px）侧栏改为浮层，不再把波形挤成零宽。
+- 触屏：`#plot` 设 `touch-action: pan-y`（竖滑交给浏览器滚动，横滑由指针事件平移），
+  双指捏合缩放（以两指中点为锚），捏合后剩一指无缝转平移；`#axis` 拖动平移。
+- 工具栏/状态栏允许换行；`100dvh` 适配移动端地址栏伸缩。
+
+### 10.4 验证
+
+- `tsc --noEmit`、`npm run build`、`npm run dist && npm run check:portable` 通过。
+- 数据自测 47/47；设备离线 167 项（新回归：detach-sink 触发 + triggerSampleIndex、
+  合并缓冲触发尾部 flush + onEnd、设备限长尾部 flush + onEnd、4 通道打包头部计数、
+  worker `ended` 消息穿越）；lwcap 5/5、sr 12/12。
+- 无头 Chromium 三视口（1280×800 / 400×780 / 780×380）布局冒烟：应用构造成功、
+  无横向溢出、状态栏可见、16 行可滚动。
+- 按 AGENTS.md 要求，触发相关改动经三路独立并发评审（协议/设备、数据/内存、UI/测试），
+  无 blocker/major 遗留；评审采纳项：4 通道头部字节按线上打包换算（否则 onEnd 永不
+  触发且 stop 走不了快路径）、`softwareTrigger` 与 `deviceSampleLimit` 互斥校验、
+  `coalesceBytes` 对齐校验、手动 stop 排空期间不误报 onEnd、pointercancel（触屏竖
+  滑）不再误放游标、三指捏合基线重置、时间轴拖动 pointercancel 复位、pre-trigger
+  文案改为显示受 64 MiB 上限截断后的实际时长、not-found 文案纠正、waiting 状态按钮
+  动画、面板 armed 摘要。
+- 依旧无真机验证；真机复测清单同第 8 节，另加：高速率定时采集应自动停在设定时长，
+  软件触发命中后波形在 T=0 右侧应连续无缺口。
