@@ -4,12 +4,15 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5173",
+    "dev": "vite",
+    "dev:lan": "LOGICWEB_LAN=1 vite",
+    "cert": "node src/decode/tools/make-dev-cert.mjs",
     "vendor": "node src/decode/tools/vendor-assets.mjs",
     "dist": "node src/decode/tools/build-dist.mjs",
     "check:portable": "node src/decode/tools/portable-smoke.mjs",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 5174",
+    "preview": "vite preview",
+    "preview:lan": "LOGICWEB_LAN=1 vite preview",
     "check": "tsc --noEmit",
     "bench:window": "node src/device/tools/window-bench.mjs",
     "bench:geometry": "node src/device/tools/geometry-bench.mjs"
