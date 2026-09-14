@@ -14,6 +14,7 @@
  */
 
 import type { GapSpan, SampleStore } from './types.js';
+import { bytesPerSampleForChannels } from '../types.js';
 
 /** Finite and exactly an int32. Gap bounds are sample positions, so this is the range. */
 export function isSampleIndex(v: number): boolean {
@@ -187,23 +188,16 @@ export function appendLostSamples(
   const n = Math.min(missingSamples, Math.max(0, room));
   if (n <= 0) return 0;
 
-  let word = 0;
+  const bytesPerSample = bytesPerSampleForChannels(store.channelCount);
+  const last = new Uint8Array(bytesPerSample);
   if (start > 0) {
     for (let c = 0; c < store.channelCount; c++) {
-      if (store.query(c, start - 1, start, 1).high[0]) word |= 1 << c;
+      if (store.query(c, start - 1, start, 1).high[0]) last[c >>> 3] |= 1 << (c & 7);
     }
   }
 
-  // Little-endian, matching PlanarSampleStore.writeBase16's Uint16Array view of the chunk.
-  const bytesPerSample = store.channelCount > 8 ? 2 : 1;
   const filler = new Uint8Array(n * bytesPerSample);
-  if (bytesPerSample === 2) {
-    const lo = word & 0xff;
-    const hi = (word >> 8) & 0xff;
-    for (let i = 0; i < filler.length; i += 2) { filler[i] = lo; filler[i + 1] = hi; }
-  } else if (word !== 0) {
-    filler.fill(word & 0xff);
-  }
+  for (let i = 0; i < n; i++) filler.set(last, i * bytesPerSample);
 
   store.append(filler);
   store.noteGap(start, start + n);

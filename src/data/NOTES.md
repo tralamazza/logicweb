@@ -12,6 +12,17 @@ Re-run:
 src/data/bench/run-browser.sh          # new timestamped dir each run, deletes nothing
 node_modules/.bin/esbuild src/data/bench/runtests.ts --bundle --format=esm \
   --platform=node --outfile=/tmp/t.mjs && node /tmp/t.mjs --glitch-100m
+
+The 32U3 ingest path has a focused throughput check:
+
+```
+node_modules/.bin/esbuild src/data/bench/stream32.ts --bundle --format=esm \
+  --platform=node --outfile=/tmp/logicweb-stream32.mjs && \
+node --max-old-space-size=4096 /tmp/logicweb-stream32.mjs
+```
+
+It compares planar and native interleaved 32-bit storage on 32 MiB chunks. The shipping
+interleaved path must exceed 200 MSa/s for the 32ch@200M configuration.
 ```
 
 ---
@@ -55,10 +66,11 @@ A/B/A/B inside one timing round.
 
 ## 1. The layout decision: bit-packed channel planes, not device order
 
-`append` transposes device-order samples into **one bit-plane per channel**. The
-alternative - device order, 2 bytes per sample, same pyramid over it - is implemented in
-full in `interleavedStore.ts`, and **both stores' tuning constants are swept over the same
-range**; quoting a swept constant against a hardcoded one is a handicap, not a comparison.
+`append` transposes device-order samples into **one bit-plane per channel** for ordinary
+widths. SLogic32U3 is the exception: `createSampleStore(32, ...)` keeps native 4-byte
+little-endian words in `InterleavedSampleStore`, because the USB path must ingest 200 MSa/s
+before the UI can query it. The same pyramid contract is retained, so rendering and file
+formats do not branch on the storage layout.
 
 ### Memory is a tie, exactly
 

@@ -24,6 +24,7 @@
 import { BitPlane, HAS_ONE, HAS_ZERO, HAS_BOTH } from './bitplane.js';
 import { assertGapBounds, mergeGap, splitAroundGaps } from './gaps.js';
 import { GAP_BIT } from './types.js';
+import { bytesPerSampleForChannels, isChannelCount, type ChannelCount } from '../types.js';
 import type { ColumnView, GapSpan, MemoryReport, SampleStore } from './types.js';
 
 /** 2^24 samples per base block = 2 MiB per channel per block. */
@@ -60,7 +61,7 @@ function levelBlockBitsLog(level: number): number {
 }
 
 export interface PlanarStoreOptions {
-  channelCount: 4 | 8 | 16;
+  channelCount: ChannelCount;
   samplerate: number;
   /**
    * If true, query() snaps pixel column boundaries to whole level-k bins instead of
@@ -103,13 +104,13 @@ export class PlanarSampleStore implements SampleStore {
 
   constructor(opts: PlanarStoreOptions) {
     const { channelCount, samplerate } = opts;
-    if (channelCount !== 4 && channelCount !== 8 && channelCount !== 16) {
-      throw new Error(`channelCount must be 4, 8 or 16, got ${channelCount}`);
+    if (!isChannelCount(channelCount)) {
+      throw new Error(`channelCount must be one of 4, 8, 16, 32, 64 or 128, got ${channelCount}`);
     }
     if (!(samplerate > 0)) throw new Error(`samplerate must be positive, got ${samplerate}`);
     this.channelCount = channelCount;
     this.samplerate = samplerate;
-    this.bytesPerSample = channelCount === 16 ? 2 : 1;
+    this.bytesPerSample = bytesPerSampleForChannels(channelCount);
     this.snapColumns = opts.snapColumns === true;
     this.coreBins = opts.coreBins ?? DEFAULT_CORE_BINS;
 
@@ -145,8 +146,10 @@ export class PlanarSampleStore implements SampleStore {
     if (to > 0x7fffffff) throw new Error(`capture would exceed the 2^31 sample ceiling (${to})`);
 
     for (let c = 0; c < this.channelCount; c++) this.base[c]!.extendTo(to);
-    if (bps === 2) this.writeBase16(chunk, n, from);
-    else this.writeBase8(chunk, n, from);
+    if (bps === 1) this.writeBase8(chunk, n, from);
+    else if (bps === 2) this.writeBase16(chunk, n, from);
+    else if (bps === 4) this.writeBase32(chunk, n, from);
+    else this.writeBaseWide(chunk, n, from);
 
     this.length = to;
     this.validBins[0] = to;
@@ -313,6 +316,94 @@ export class PlanarSampleStore implements SampleStore {
   private writeSampleN(v: number, bit: number): void {
     const planes = this.base;
     for (let c = 0; c < this.channelCount; c++) planes[c]!.setBit(bit, (v >>> c) & 1);
+  }
+
+  /** 32-channel fast path. The wire sample is little-endian uint32. */
+  private writeBase32(chunk: Uint8Array, n: number, dstBit: number): void {
+    let src: Uint32Array;
+    if ((chunk.byteOffset & 3) === 0) src = new Uint32Array(chunk.buffer, chunk.byteOffset, n);
+    else {
+      src = new Uint32Array(n);
+      new Uint8Array(src.buffer).set(chunk);
+    }
+    let si = 0;
+    const head = Math.min(n, (32 - (dstBit & 31)) & 31);
+    for (; si < head; si++) this.writeSampleN(src[si]!, dstBit + si);
+    const bodyEnd = si + (((n - si) >>> 5) << 5);
+    if (bodyEnd > si) this.writeBody32(src, si, bodyEnd, dstBit + si);
+    si = bodyEnd;
+    for (; si < n; si++) this.writeSampleN(src[si]!, dstBit + si);
+  }
+
+  /**
+   * 32-channel hot loop. Keep the eight accumulators for one input byte in scalar
+   * locals. The previous Int32Array accumulator was convenient, but every bit gather
+   * became a bounds-checked typed-array read/modify/write in V8 and reduced sustained
+   * ingest to single-digit MSa/s. Four passes over the same 32 input words are still
+   * cache-hot and let TurboFan keep every accumulator in a register.
+   */
+  private writeBody32(src: Uint32Array, si: number, siEnd: number, dstBit: number): void {
+    const imul = Math.imul;
+    const M = 0x01010101;
+    const G = 0x10204080;
+    const planes = this.base;
+    const bbl = BASE_BLOCK_BITS_LOG;
+    const blockMask = (1 << bbl) - 1;
+
+    while (si < siEnd) {
+      const blk = dstBit >>> bbl;
+      const wordInBlock = (dstBit & blockMask) >>> 5;
+      const wordsLeftInBlock = (1 << (bbl - 5)) - wordInBlock;
+      const wordsWanted = (siEnd - si) >>> 5;
+      const words = Math.min(wordsLeftInBlock, wordsWanted);
+
+      for (let q = 0; q < 4; q++) {
+        const c = q << 3;
+        const b0 = planes[c]!.blocks[blk]!, b1 = planes[c + 1]!.blocks[blk]!;
+        const b2 = planes[c + 2]!.blocks[blk]!, b3 = planes[c + 3]!.blocks[blk]!;
+        const b4 = planes[c + 4]!.blocks[blk]!, b5 = planes[c + 5]!.blocks[blk]!;
+        const b6 = planes[c + 6]!.blocks[blk]!, b7 = planes[c + 7]!.blocks[blk]!;
+        const byteShift = q << 3;
+
+        for (let w = 0; w < words; w++) {
+          let a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0, a6 = 0, a7 = 0;
+          const base = si + (w << 5);
+          for (let g = 0; g < 8; g++) {
+            const j = base + (g << 2);
+            const L = ((src[j]! >>> byteShift) & 0xff) |
+              (((src[j + 1]! >>> byteShift) & 0xff) << 8) |
+              (((src[j + 2]! >>> byteShift) & 0xff) << 16) |
+              (((src[j + 3]! >>> byteShift) & 0xff) << 24);
+            const sh = g << 2;
+            a0 |= (imul(L & M, G) >>> 28) << sh;
+            a1 |= (imul((L >>> 1) & M, G) >>> 28) << sh;
+            a2 |= (imul((L >>> 2) & M, G) >>> 28) << sh;
+            a3 |= (imul((L >>> 3) & M, G) >>> 28) << sh;
+            a4 |= (imul((L >>> 4) & M, G) >>> 28) << sh;
+            a5 |= (imul((L >>> 5) & M, G) >>> 28) << sh;
+            a6 |= (imul((L >>> 6) & M, G) >>> 28) << sh;
+            a7 |= (imul((L >>> 7) & M, G) >>> 28) << sh;
+          }
+          const o = wordInBlock + w;
+          b0[o] = a0; b1[o] = a1; b2[o] = a2; b3[o] = a3;
+          b4[o] = a4; b5[o] = a5; b6[o] = a6; b7[o] = a7;
+        }
+      }
+      si += words << 5;
+      dstBit += words << 5;
+    }
+  }
+
+  /** Generic byte-oriented path for 64/128 channels (and future widths). */
+  private writeBaseWide(chunk: Uint8Array, n: number, dstBit: number): void {
+    const bps = this.bytesPerSample;
+    for (let i = 0; i < n; i++) {
+      const o = i * bps;
+      const bit = dstBit + i;
+      for (let c = 0; c < this.channelCount; c++) {
+        this.base[c]!.setBit(bit, (chunk[o + (c >>> 3)]! >>> (c & 7)) & 1);
+      }
+    }
   }
 
   // ---------------------------------------------------------------- pyramid

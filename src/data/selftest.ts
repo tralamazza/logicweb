@@ -19,6 +19,7 @@ import { RleSampleStore } from './rleStore.js';
 import { GAP_BIT } from './types.js';
 import { generateCapture, fillMacro, makeTileBlock, MACRO_SAMPLES } from './generator.js';
 import type { SampleStore, ColumnView } from './types.js';
+import { runSoftwareTriggerSuite } from './softwareTriggerSelftest.js';
 
 export interface TestResult {
   name: string;
@@ -606,6 +607,84 @@ function testNarrowModes(): TestResult[] {
   return out;
 }
 
+/** Byte-oriented sample widths used by SLogic32 U3 and future 64/128-channel boards. */
+function testWideModes(): TestResult[] {
+  const out: TestResult[] = [];
+  for (const nch of [32, 64, 128] as const) {
+    const n = 4097;
+    const bps = nch / 8;
+    const raw = new Uint8Array(n * bps);
+    for (let i = 0; i < n; i++) {
+      for (let c = 0; c < nch; c++) {
+        if (((i * 17 + c * 13) % 31) < 7) raw[i * bps + (c >>> 3)]! |= 1 << (c & 7);
+      }
+    }
+    const store = new PlanarSampleStore({ channelCount: nch, samplerate: 200e6 });
+    for (let i = 0; i < n; i += 257) {
+      store.append(raw.subarray(i * bps, Math.min(n, i + 257) * bps));
+    }
+    let fail = '';
+    for (const c of [0, 7, 15, 31, 63, 127].filter((c) => c < nch)) {
+      for (let i = 0; i < n; i++) {
+        const want = (raw[i * bps + (c >>> 3)]! >>> (c & 7)) & 1;
+        if (store.sampleAt(c, i) !== want) { fail = `ch${c} sample ${i}`; break; }
+      }
+      if (fail) break;
+    }
+    out.push({
+      name: `${nch}-channel little-endian sample mode`,
+      pass: fail === '',
+      detail: fail || `${n} samples round-tripped`,
+    });
+  }
+  {
+    const n = 65_539;
+    const raw = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      const word = (Math.imul(i, 0x9e3779b1) ^ (i >>> 3)) >>> 0;
+      new DataView(raw.buffer).setUint32(i * 4, word, true);
+    }
+    const planar = new PlanarSampleStore({ channelCount: 32, samplerate: 200e6 });
+    const native = new InterleavedSampleStore(200e6, 32);
+    for (let i = 0; i < n; i += 1009) {
+      const chunk = raw.subarray(i * 4, Math.min(n, i + 1009) * 4);
+      planar.append(chunk);
+      native.append(chunk);
+    }
+    let fail = '';
+    for (const c of [0, 1, 7, 15, 16, 23, 30, 31]) {
+      for (const i of [0, 1, 31, 32, 1008, 1009, 65_535, n - 1]) {
+        if (native.sampleAt(c, i) !== planar.sampleAt(c, i)) {
+          fail = `sampleAt ch${c} sample ${i}`;
+          break;
+        }
+      }
+      if (fail) break;
+      for (const [start, end, bins] of [[0, n, 997], [17, 40_003, 333], [n - 100, n, 100]]) {
+        const a = planar.query(c, start!, end!, bins!);
+        const b = native.query(c, start!, end!, bins!);
+        for (let j = 0; j < bins!; j++) {
+          if (a.packed[j] !== b.packed[j]) { fail = `query ch${c} bin ${j}`; break; }
+        }
+        if (fail) break;
+      }
+      if (fail) break;
+      const aEdges = planar.edges(c, 0, n);
+      const bEdges = native.edges(c, 0, n);
+      if (aEdges.length !== bEdges.length || aEdges.some((v, i) => v !== bEdges[i])) {
+        fail = `edges ch${c}`;
+        break;
+      }
+    }
+    out.push({
+      name: '32-channel native-word shipping store matches planar reference',
+      pass: fail === '',
+      detail: fail || `${n} samples, sample/query/edge paths agree`,
+    });
+  }
+  return out;
+}
+
 /** Query correctness while the capture is still arriving and levels are incomplete. */
 function testLiveCapture(): TestResult[] {
   const total = 2_000_003; // deliberately not a multiple of any bin size
@@ -867,6 +946,8 @@ function testBadArguments(store: SampleStore, tag: string): TestResult[] {
 /** The full suite minus the 100M-sample cases, which are driven by the bench. */
 export function runFastSuite(log: Log): TestResult[] {
   const results: TestResult[] = [];
+  log('software trigger');
+  results.push(...runSoftwareTriggerSuite());
   log('generator sanity');
   {
     const tile = makeTileBlock();
@@ -910,6 +991,8 @@ export function runFastSuite(log: Log): TestResult[] {
   results.push(...testGaps());
   log('narrow channel modes');
   results.push(...testNarrowModes());
+  log('wide channel modes');
+  results.push(...testWideModes());
   log('live capture');
   results.push(...testLiveCapture());
   log('bad arguments');
