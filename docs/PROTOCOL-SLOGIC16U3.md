@@ -150,27 +150,33 @@ Bulk IN on `0x82`, continuous once running.
 - **The first 4 bytes of the stream are junk** and must be dropped exactly once per
   acquisition, not once per transfer (`protocol.c:117`, `head_dropped`). If the first
   transfer returns fewer than 4 bytes, carry the drop to the next one.
-- Packing at 16 channels: 2 bytes per sample, channel *n* = bit *n*, little endian.
+- Packing at 16 channels: 2 bytes per sample, channel *n* = bit *n*, little endian. SLogic32U3
+  uses 4 bytes per sample with the same little-endian bit numbering.
 - Below 8 channels the device packs several samples per byte and the host unpacks
   (`slogic_submit_raw_data`, `api.c:880`): with `nCh` channels there are `8 / nCh` samples
   per byte, sample *j* occupying bits `[j % (8/nCh) * nCh ... +nCh)`. Supported channel
-  counts are 4, 8, 16 (`api.c:129`).
-- Transfer sizing (`protocol.c:400`): buffers are 32 KiB-aligned, sized to roughly one
-  transfer duration of data, with at least 4 transfers in flight. Keep several
-  `transferIn` calls outstanding or the device overruns.
+  counts are 4, 8, 16 and 32 (`api.c:129`, SLogic32U3).
+- Transfer sizing (`protocol.c:400`): libsigrok trains a 32 KiB-aligned buffer to roughly
+  62.5 ms of data and keeps up to 16 transfers in flight. WebUSB currently rejects requests
+  above 32 MiB, so logicweb uses the smaller of that trained size and 32 MiB (32ch@100M is
+  about 25 MiB; 32ch@200M is capped at 32 MiB). Replacements are submitted before completed
+  buffers enter the synchronous consumer path.
 
 ## Rate limits
 
 Samplerates offered (`api.c:95`): 5, 8, 10, 16, 20, 25, 32, 40, 50, 80, 100, 160, 200, 400,
 800 MHz.
 
-Ceiling by channel count on non-Windows (`api.c:134`), `{4ch, 8ch, 16ch}`:
+Ceiling by channel count on non-Windows (`api.c:134`):
 
 | channels | max samplerate |
 |---|---|
 | 16 | 200 MHz |
 | 8  | 400 MHz |
 | 4  | 800 MHz |
+
+SLogic32U3 adds 32 channels at 200 MHz and raises the shared wire ceiling to 800 MB/s
+(4ch@1600M, 8ch@800M, 16ch@400M, 32ch@200M).
 
 Hardware bandwidth cap is 3200 Mbit/s = 400 MB/s. **WebUSB will not sustain that.** Expect
 the browser path to cap well below the device ceiling. Measure what it actually sustains
