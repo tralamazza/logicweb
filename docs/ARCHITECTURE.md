@@ -12,7 +12,7 @@ Brave (Chromium) - the only WebUSB-capable browser installed on this machine.
 
 ```
 src/
-  device/     WebUSB transport for the SLogic16 U3          (owner: device builder)
+  device/     WebUSB transport for SLogic U3 devices         (owner: device builder)
   data/       sample storage + multiresolution query         (owner: data builder)
   render/     WebGL2 waveform canvas                         (owner: render builder)
   ui/         shell, channel rows, timebase, cursors         (owner: ui builder)
@@ -28,7 +28,7 @@ docs/         specs, this file, progress                     (owner: lead)
 
 ```ts
 export interface CaptureConfig {
-  channels: 4 | 8 | 16;
+  channels: 4 | 8 | 16 | 32 | 64 | 128;
   samplerate: number;        // Hz, from the table in PROTOCOL-SLOGIC16U3.md
   thresholdVolts: number;    // mapped to the DAC code by the device layer
 }
@@ -37,20 +37,24 @@ export interface Device {
   readonly name: string;
   readonly serial: string;
   start(cfg: CaptureConfig, sink: (chunk: Uint8Array) => void,
-        onDropout?: (samplePosition: number, missingSamples: number) => void): Promise<void>;
+        onDropout?: (samplePosition: number, missingSamples: number) => void,
+        options?: CaptureStartOptions): Promise<void>;
   stop(): Promise<void>;
 }
 
 export function requestDevice(): Promise<Device>;   // triggers the WebUSB picker
 ```
 
-`onDropout` fires when a bulk transfer comes back short mid-run: `samplePosition` samples
-were delivered before `missingSamples` were lost. The short final transfer of a run is the
-normal end and is not reported. Callers should mark the span via `SampleStore.noteGap`.
+`onDropout` is reserved for a controller-level loss signal. A successful WebUSB short packet
+is still delivered at its actual length and does not imply a gap; callers should not infer
+missing samples from `data.byteLength < requestedLength`. If a future transport reports a
+real loss, `samplePosition` and `missingSamples` identify the span for `SampleStore.noteGap`.
+Samples are little-endian and occupy `ceil(channels / 8)` bytes after sub-8-channel wire
+packing is expanded, so downstream code does not need a new representation at 32/64/128.
 
 `chunk` is raw device bytes with the 4 junk head bytes already removed and sub-8-channel
-packing already expanded to one byte per sample. At 16 channels it stays 2 bytes/sample
-little endian.
+packing already expanded. Samples are little-endian and occupy `ceil(channels / 8)` bytes
+(2 at 16 channels, 4 at 32 channels).
 
 ### `src/data`
 
@@ -74,11 +78,36 @@ export interface SampleStore {
 }
 ```
 
+`CaptureStartOptions.softwareTrigger` enables a bounded host-side trigger. It accepts
+one or more per-channel `level`, `rising`, `falling` or `edge` conditions; all confirmed
+conditions must match the same complete sample (logical AND). While waiting, only the
+single shared rolling pre-trigger window is retained; a match emits that window and
+post-trigger samples to the sink. The `triggered` callback also reports the trigger
+sample's zero-based position in that emitted stream. The UI uses it as `T=0`, draws a
+vertical T marker, and labels every retained pre-trigger sample with negative time. The right
+panel owns the global pre-trigger percentage and `Enable Mask`; disabling that mask leaves all
+per-channel modes intact and merely bypasses the matcher. The bounded
+search allowance is the output budget plus the pre-trigger window, so a trigger at the
+nominal budget boundary can still produce its final post-trigger sample. If that
+allowance is exhausted or the user stops first, `onTriggerState('not-found')` is reported
+and the search prefix is discarded. Trigger-disabled captures keep the direct streaming path.
+The implementation is tested for 4/8/16/32/64/128-channel sample widths and carries
+partial wide samples across USB transfer boundaries.
+
+When a software trigger is enabled, a timer capture's duration starts at the trigger sample,
+not at `start()`: the matcher waits indefinitely while refreshing its bounded pre-trigger
+ring, then emits the prefix plus the configured post-trigger duration. A manual stop before
+the match reports no trigger and discards the ring.
+
 `query` being sublinear in sample count is the whole ballgame for the framerate metric.
 Build the mip pyramid on append. Two implementations satisfy the contract:
 
-- `PlanarSampleStore` - the live-capture store. One bit per sample per channel plus a
-  pyramid; `createSampleStore()` returns it.
+- `PlanarSampleStore` - the live-capture store for 4/8/16/64/128-channel captures. One bit
+  per sample per channel plus a pyramid.
+- `InterleavedSampleStore` - the 32-channel live-capture store. It preserves native
+  little-endian uint32 samples and uses the same two-plane pyramid, avoiding a synchronous
+  32-channel transpose on the USB consumer path. `createSampleStore()` selects this layout
+  automatically for 32 channels.
 - `RleSampleStore` - the import store, built from per-channel transition lists
   (`createTransitionStore()` quantises transition times to sample positions with the same
   rule the planar resample used: first sample at or after the transition, same-sample
