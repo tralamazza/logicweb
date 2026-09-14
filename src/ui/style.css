@@ -34,7 +34,9 @@
   --toolbar-h: 31px;   /* content device y 66..125, border 126..127 */
   --axis-h: 30px;      /* content device y 128..185, border 186..187 */
   --status-h: 40px;    /* border device y 1920..1921, content 1922..1999 */
-  --labels-w: 170px;   /* [CHOICE] room for per-channel Trigger Enabled badge */
+  /* [CHOICE] the D-tag, the (optional) name field and the trigger button; default
+     channel names are empty now, so the column no longer reserves "Channel 15" width. */
+  --labels-w: 128px;
   --rail-w: 47px;      /* border device x 3106..3107, content 3108..3199 */
   --strip-w: 5px;      /* device x 0..9 */
   --panel-w: 296px;
@@ -58,17 +60,23 @@ html, body {
   height: 100%;
 }
 
+/* Mobile browsers resize the layout viewport as their URL bar comes and goes; 100dvh
+   tracks it where supported, so the status bar is never pushed off-screen. */
+@supports (height: 100dvh) {
+  html, body, #app { height: 100dvh; }
+}
+
 /* ---------------------------------------------------------------- toolbar */
 
 #toolbar {
-  height: var(--toolbar-h);
   min-height: var(--toolbar-h);
   background: var(--bg10);
   border-bottom: 1px solid var(--border-high);
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
+  flex-wrap: wrap;       /* phones: the title drops to a second line, buttons stay */
+  gap: 2px 6px;
+  padding: 2px 8px;
 }
 
 #toolbar .spacer { flex: 1; }
@@ -92,7 +100,13 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 13px;
   min-width: 74px;
 }
-#capture-title { color: var(--text50); }
+#capture-title {
+  color: var(--text50);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ---------------------------------------------------------------- main row */
 
@@ -100,6 +114,20 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex: 1;
   display: flex;
   min-height: 0;
+  position: relative;   /* the side panel overlays this box on narrow screens */
+}
+
+/* The labels and the plot scroll together vertically when the channel rows do not fit
+   the viewport (phones, or many channels); the axis and the corner above the labels
+   stay pinned. Desktop with everything fitting never actually scrolls. */
+#scroll-area {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 #labels-col {
@@ -117,9 +145,13 @@ button:disabled { opacity: 0.45; cursor: default; }
   height: var(--axis-h);
   min-height: var(--axis-h);
   border-bottom: 1px solid var(--border-low);
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg10);
 }
 
-#channel-list { flex: 1; overflow: hidden; }
+#channel-list { flex: 1; }
 
 .ch-cell {
   display: flex;
@@ -160,6 +192,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .ch-name:hover { border-color: var(--border-low); }
 .ch-name:focus { outline: none; border-color: var(--accent); background: var(--bg00); }
+/* The rename affordance only shows itself when the pointer is already there. */
+.ch-name::placeholder { color: transparent; }
+.ch-name:hover::placeholder, .ch-name:focus::placeholder { color: var(--text50); }
 .ch-trigger {
   flex: none;
   width: 30px;
@@ -186,6 +221,11 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 9px;
 }
 .ch-trigger.masked { opacity: .45; }
+.ch-trigger.active.waiting { animation: trigger-waiting 1.1s ease-in-out infinite; }
+@keyframes trigger-waiting {
+  0%, 100% { background: var(--accent); border-color: var(--accent); }
+  50% { background: #a98ff0; border-color: #a98ff0; }
+}
 .ch-trigger.active.triggered { background: #2f9e64; border-color: #2f9e64; }
 .ch-trigger.active.not-found { background: var(--negative); border-color: var(--negative); }
 .trigger-inline-picker {
@@ -234,18 +274,26 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: block;
   border-bottom: 1px solid var(--border-low);   /* [MEASURED] #303136, not #57575E */
   cursor: ew-resize;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg10);
+  touch-action: none;    /* dragging the ruler pans; the page must not consume it */
 }
 
 #plot {
   position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  /* Grows with its canvases (min-height:auto keeps a flex item at content size), and
+     stretches to fill the scroll viewport when the rows are shorter than it. */
+  flex: 1 1 auto;
   background: var(--bg10);
   cursor: crosshair;
+  /* Vertical swipes scroll the channel stack (the browser's), horizontal pans and
+     two-finger pinches drive the viewport (ours, via pointer events). */
+  touch-action: pan-y;
 }
 
-#wave-stack { position: absolute; inset: 0; }
+#wave-stack { position: relative; }
 .wave-canvas { display: block; width: 100%; }
 
 /*
@@ -275,6 +323,22 @@ button:disabled { opacity: 0.45; cursor: default; }
   overflow-y: auto;
 }
 #side-panel.hidden { display: none; }
+
+/* Narrow screens: the fixed columns would squeeze the plot to nothing, so the side
+   panel floats over the plot instead and the label column gives up a little width. */
+@media (max-width: 760px) {
+  :root { --labels-w: 104px; }
+  #side-panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: var(--rail-w);
+    z-index: 20;
+    width: min(var(--panel-w), calc(100% - var(--rail-w)));
+    min-width: 0;
+    box-shadow: -6px 0 24px rgb(0 0 0 / 45%);
+  }
+}
 
 #rail {
   width: var(--rail-w);
@@ -360,14 +424,14 @@ button:disabled { opacity: 0.45; cursor: default; }
 /* ---------------------------------------------------------------- status bar */
 
 #status {
-  height: var(--status-h);
   min-height: var(--status-h);
   background: var(--panel);
   border-top: 1px solid var(--border-high);
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 0 12px;
+  flex-wrap: wrap;       /* phones: measurements wrap instead of vanishing */
+  gap: 2px 16px;
+  padding: 4px 12px;
   font-size: 11px;
   color: var(--text80);
 }

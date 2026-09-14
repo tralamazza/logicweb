@@ -16,6 +16,8 @@
  */
 
 import { SAMPLERATES_HZ, vrefCode, vrefVolts } from '../device/index.js';
+import { MAX_SOFTWARE_TRIGGER_PREFIX_BYTES } from '../data/index.js';
+import { bytesPerSampleForChannels } from '../types.js';
 import { formatDuration, formatRate } from './format.js';
 import { channelColor, type CaptureSettings, type ChannelState } from './state.js';
 import { MAX_SAMPLES } from './captureIO.js';
@@ -173,6 +175,54 @@ export class CapturePanel {
       pre.disabled = v.running || v.stopping;
       pre.addEventListener('change', () => this.cb.onSettings({ ...s, preTriggerPercent: Number(pre.value) }));
       triggerSec.body.appendChild(labelled('Pre-trigger buffer', pre));
+
+      // The one mistake this section invites: enabling the trigger and never picking a
+      // condition, which silently arms nothing. Say what is armed, or what is missing.
+      const armed = div('panel-note');
+      if (s.triggerConditions.length === 0) {
+        armed.classList.add('error');
+        armed.textContent =
+          'No condition set - the capture will run untriggered. Click the trigger ' +
+          'button on a channel row (left column) and pick an edge or a level.';
+      } else {
+        const what = s.triggerConditions
+          .map((c) => `D${c.channel} ${c.kind === 'level' ? (c.level ? 'high' : 'low') : c.kind}`)
+          .join(' AND ');
+        // The *effective* pre-trigger window, with the same clamps startCapture
+        // applies: percent of the post-trigger budget, capped by the 64 MiB retained
+        // prefix. Promising the raw percentage would overstate it exactly when the
+        // cap bites (e.g. 50% of 1 s at 16ch/200M is capped at ~167 ms).
+        const post = s.mode === 'timer'
+          ? Math.min(MAX_SAMPLES - 1, Math.round(s.seconds * s.samplerate))
+          : MAX_SAMPLES - 1;
+        const pre = Math.min(
+          Math.max(0, post - 1),
+          Math.max(0, Math.floor(post * s.preTriggerPercent / 100)),
+          Math.floor(MAX_SOFTWARE_TRIGGER_PREFIX_BYTES / bytesPerSampleForChannels(s.channels)),
+        );
+        const capped = pre < Math.floor(post * s.preTriggerPercent / 100);
+        armed.textContent =
+          `Armed: ${what}. T=0 at the trigger; up to ` +
+          `${formatDuration(pre / s.samplerate)} before it is kept as negative time` +
+          (capped ? ` (capped by the ${MAX_SOFTWARE_TRIGGER_PREFIX_BYTES / 1048576} MiB pre-trigger buffer)` : '') +
+          '.';
+      }
+      triggerSec.body.appendChild(armed);
+
+      if (v.triggerState === 'waiting') {
+        const wait = div('panel-note live');
+        wait.textContent = 'Waiting for the trigger condition…';
+        triggerSec.body.appendChild(wait);
+      } else if (v.triggerState === 'triggered') {
+        const hit = div('panel-note live');
+        hit.textContent = 'Triggered - recording the post-trigger window.';
+        triggerSec.body.appendChild(hit);
+      } else if (v.triggerState === 'not-found') {
+        const miss = div('panel-note error');
+        // finish() discards the rolling search prefix - nothing was recorded.
+        miss.textContent = 'Stopped without a trigger; nothing was recorded.';
+        triggerSec.body.appendChild(miss);
+      }
     }
 
     // No Start/Stop here on purpose: the toolbar transport is the only one, so there is

@@ -131,7 +131,8 @@ export class AnalyzerPanel {
     const enabled = v.channels.filter((c) => c.index < v.captureChannels);
     const chanOpts = (required: boolean): [string, string][] => [
       ...(required ? [] : [['-1', '—'] as [string, string]]),
-      ...enabled.map((c) => [String(c.index), `D${c.index} ${c.name}`] as [string, string]),
+      ...enabled.map((c) =>
+        [String(c.index), c.name ? `D${c.index} ${c.name}` : `D${c.index}`] as [string, string]),
     ];
 
     const allChans = [...info.channels, ...info.optional_channels];

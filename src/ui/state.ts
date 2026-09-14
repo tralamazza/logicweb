@@ -70,10 +70,15 @@ export type TriggerMode = 'low' | 'high' | 'rising' | 'falling' | 'dont-care';
 
 export type Source = 'none' | 'file' | 'device';
 
+/**
+ * Default names are empty: the coloured D<index> tag is the channel's identity, and
+ * repeating it as a "Channel 12" name only made the label column wide. The name field
+ * is for what the user connects the probe to ("SDA"), not for restating the index.
+ */
 export function defaultChannels(n: number): ChannelState[] {
   return Array.from({ length: n }, (_, i) => ({
     index: i,
-    name: `Channel ${i}`,
+    name: '',
     enabled: true,
   }));
 }

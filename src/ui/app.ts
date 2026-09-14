@@ -113,6 +113,7 @@ export class App {
   // DOM
   private readonly el: {
     plot: HTMLDivElement; waveStack: HTMLDivElement; axis: HTMLCanvasElement;
+    scroll: HTMLDivElement;
     channelList: HTMLDivElement; side: HTMLDivElement; status: HTMLDivElement;
     hint: HTMLDivElement; transport: HTMLButtonElement; title: HTMLSpanElement;
     fileInput: HTMLInputElement;
@@ -121,6 +122,7 @@ export class App {
   constructor() {
     this.el = {
       plot: must<HTMLDivElement>('plot'),
+      scroll: must<HTMLDivElement>('scroll-area'),
       waveStack: must<HTMLDivElement>('wave-stack'),
       axis: must<HTMLCanvasElement>('axis'),
       channelList: must<HTMLDivElement>('channel-list'),
@@ -173,7 +175,10 @@ export class App {
     this.wirePlot();
     this.wireRail();
 
-    new ResizeObserver(() => { this.relayout(); }).observe(this.el.plot);
+    // Observe the scroll viewport, not the plot: the plot's height is now an *output*
+    // of relayout (its canvases stack in normal flow so the rows can scroll), and
+    // observing it would loop layout -> resize -> layout.
+    new ResizeObserver(() => { this.relayout(); }).observe(this.el.scroll);
     window.addEventListener('resize', () => this.relayout());
 
     this.relayout();
@@ -223,7 +228,11 @@ export class App {
    * is derived rather than a constant, and annotation lanes are subtracted first.
    */
   private relayout(): void {
-    const plotH = this.el.plot.clientHeight || 600;
+    // Rows auto-fit the *visible* plot height (the scroll viewport minus the sticky
+    // axis). When even minimum-height rows do not fit, the stack overflows and the
+    // scroll area scrolls - phones get every channel instead of the first six.
+    const axisH = this.el.axis.offsetHeight || 30;
+    const plotH = Math.max(120, (this.el.scroll.clientHeight || 630) - axisH);
     const enabled = this.enabledChannels();
     this.lanes = this.computeLanes(enabled);
 
@@ -523,20 +532,49 @@ export class App {
       this.dirty = true;
     }, { passive: false });
 
+    // One pointer drags (pan) or clicks (cursor); two pointers pinch-zoom around their
+    // midpoint. Touch is pointer events here too - #plot carries `touch-action: pan-y`,
+    // so the browser keeps vertical scrolling and hands everything else to this code.
+    const pointers = new Map<number, { x: number; y: number }>();
+    let pinch: { dist: number; midX: number } | null = null;
     let dragging = false;
     let lastX = 0;
     let downX = 0;
     let moved = 0;
     plot.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      lastX = e.clientX;
-      downX = e.clientX;
-      moved = 0;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       plot.setPointerCapture(e.pointerId);
+      if (pointers.size === 2) {
+        const [a, b] = [...pointers.values()] as [{ x: number; y: number }, { x: number; y: number }];
+        pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y), midX: (a.x + b.x) / 2 };
+        dragging = false;
+        moved = 1000;   // a pinch never ends in a cursor placement
+      } else if (pointers.size === 1) {
+        dragging = true;
+        lastX = e.clientX;
+        downX = e.clientX;
+        moved = 0;
+      }
     });
     plot.addEventListener('pointermove', (e) => {
       const rect = plot.getBoundingClientRect();
+      if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && pointers.size >= 2) {
+        const [a, b] = [...pointers.values()] as [{ x: number; y: number }, { x: number; y: number }];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        const midX = (a.x + b.x) / 2;
+        if (this.store.length > 0 && dist > 0 && pinch.dist > 0) {
+          const dpr = globalThis.devicePixelRatio || 1;
+          // Fingers spreading = zoom in = a smaller sample span, anchored between them.
+          this.stack.zoomAt((midX - rect.left) * dpr, pinch.dist / dist);
+          this.stack.panPixels(-(midX - pinch.midX) * dpr);
+          this.setFollow(false);
+          this.dirty = true;
+        }
+        pinch = { dist, midX };
+        return;
+      }
       if (dragging) {
         const dpr = globalThis.devicePixelRatio || 1;
         const dx = e.clientX - lastX;
@@ -550,9 +588,25 @@ export class App {
       this.updateHover(e.clientX - rect.left, e.clientY - rect.top);
     });
     const end = (e: PointerEvent) => {
-      if (!dragging) return;
+      pointers.delete(e.pointerId);
+      if (plot.hasPointerCapture(e.pointerId)) plot.releasePointerCapture(e.pointerId);
+      if (pinch && pointers.size >= 2) {
+        // Three fingers down and one lifted: the pinch pair changed identity, so the
+        // baseline must be re-measured or the next move zooms by the pair difference.
+        const [a, b] = [...pointers.values()] as [{ x: number; y: number }, { x: number; y: number }];
+        pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y), midX: (a.x + b.x) / 2 };
+      } else if (pinch) {
+        pinch = null;
+        // The finger that stays down keeps panning; it must not read as a click.
+        const rest = [...pointers.values()][0];
+        if (rest) { dragging = true; lastX = rest.x; moved = 1000; }
+      }
+      if (!dragging || pointers.size > 0) return;
       dragging = false;
-      plot.releasePointerCapture(e.pointerId);
+      // A pointercancel is the browser taking the gesture for itself - with
+      // `touch-action: pan-y` that is every vertical scroll of the channel stack,
+      // which has near-zero horizontal displacement and must not read as a click.
+      if (e.type === 'pointercancel') return;
       // A click, not a drag: place a cursor. Shift places B.
       if (moved < 3 && Math.abs(e.clientX - downX) < 3 && this.store.length > 0) {
         const rect = plot.getBoundingClientRect();
@@ -581,10 +635,16 @@ export class App {
       this.setFollow(false);
       this.dirty = true;
     });
-    this.el.axis.addEventListener('pointerup', (e) => {
+    const axisEnd = (e: PointerEvent) => {
       axisDrag = false;
-      this.el.axis.releasePointerCapture(e.pointerId);
-    });
+      if (this.el.axis.hasPointerCapture(e.pointerId)) {
+        this.el.axis.releasePointerCapture(e.pointerId);
+      }
+    };
+    this.el.axis.addEventListener('pointerup', axisEnd);
+    // Without this, a cancelled drag (tab switch, system gesture) leaves axisDrag
+    // stuck on and every later hover over the ruler pans with no button held.
+    this.el.axis.addEventListener('pointercancel', axisEnd);
 
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -801,8 +861,11 @@ export class App {
       parts.push(`${formatDuration(store.length / sr)} total`);
       parts.push(`view ${formatDuration((view.end - view.start) / sr)}`);
     }
-    if (this.cursorA !== null) parts.push(`A ${formatDuration(this.cursorA / sr)}`);
-    if (this.cursorB !== null) parts.push(`B ${formatDuration(this.cursorB / sr)}`);
+    // Cursor positions share the axis's origin: T=0 is the trigger sample when there
+    // is one, so a pre-trigger cursor reads as the negative time the axis shows.
+    const origin = this.triggerSampleIndex ?? 0;
+    if (this.cursorA !== null) parts.push(`A ${formatDuration((this.cursorA - origin) / sr)}`);
+    if (this.cursorB !== null) parts.push(`B ${formatDuration((this.cursorB - origin) / sr)}`);
     if (this.cursorA !== null && this.cursorB !== null) {
       const d = Math.abs(this.cursorB - this.cursorA) / sr;
       parts.push(`|B-A| ${formatDuration(d)}`);
@@ -866,7 +929,12 @@ export class App {
     this.storeRef.set(store);
     this.channels = defaultChannels(store.channelCount);
     for (let i = 0; i < this.channels.length; i++) {
-      if (names[i]) this.channels[i]!.name = names[i]!;
+      // Keep real names ("SDA"); drop auto-generated ones that would just repeat the
+      // D-tag next to them ("D3", "Channel 3", "3").
+      const n = names[i];
+      if (n && n !== `D${i}` && n !== `Channel ${i}` && n !== String(i)) {
+        this.channels[i]!.name = n;
+      }
     }
     this.order = this.channels.map((c) => c.index);
     // Annotations belong to a capture; a new one invalidates them.
@@ -1033,14 +1101,23 @@ export class App {
       if (this.settings.softwareTrigger) {
         // Timer duration starts at the trigger sample. The store budget therefore
         // includes the retained prefix plus the requested post-trigger duration.
+        // In free-run mode `post` is already the store ceiling, so this clamp trims
+        // the post-trigger window, not the prefix - the trigger keeps its full ring.
         this.captureLimitSamples = Math.min(MAX_SAMPLES - 1, postTriggerSamples + preTriggerSamples);
       }
       await this.device.start(cfg, (chunk) => {
-        if (!this.running) return;
-        this.captureBytes += chunk.length;
+        // Chunks arriving while `stopping` are the drained tail of this capture - the
+        // reads that had already completed when stop began, plus the flushed coalescing
+        // block. Dropping them truncated every manually stopped capture by up to one
+        // sink block (~10 ms at 32ch/200M).
+        if (!this.running && !this.stopping) return;
         const room = (this.captureLimitSamples - store.length) * bytesPerSample;
         if (room <= 0) { void this.stopCapture(); return; }
+        // Count what is actually kept: a truncated tail chunk must not inflate the
+        // progress readout past the capture.
+        this.captureBytes += Math.min(room, chunk.length);
         store.append(room < chunk.length ? chunk.subarray(0, room) : chunk);
+        this.dirty = true;
         if (store.length >= this.captureLimitSamples) void this.stopCapture();
       }, (pos, missing) => {
         // A transfer the device could not fill. Append filler for the lost samples so
@@ -1052,7 +1129,7 @@ export class App {
         // invariant that has to hold, and the two cases where they can diverge are both
         // already handled: the sink returns early when !running (checked here too) and
         // when the capture is full (appendLostSamples then finds no room and returns 0).
-        if (!this.running) return;
+        if (!this.running && !this.stopping) return;
         // `pos` is not the anchor, but it is a free cross-check on the invariant, and a
         // silent divergence here would misplace every gap in the capture. Reported once.
         if (pos !== store.length && this.lostSamples === 0) {
@@ -1064,6 +1141,11 @@ export class App {
         this.lostSamples += n;
         if (store.length >= this.captureLimitSamples) void this.stopCapture();
       }, this.settings.softwareTrigger ? {
+        // The transport says when the capture has delivered everything it ever will
+        // (trigger budget emitted, or the device stopped at its own length). This is
+        // the stop signal that does not depend on this side's sample arithmetic
+        // agreeing with the device's to the sample.
+        onEnd: () => { if (this.running) void this.stopCapture(); },
         softwareTrigger: {
           channels: cfg.channels,
           conditions: triggerConditions.map((c) => ({
@@ -1095,6 +1177,7 @@ export class App {
         // known when the device is armed, and a limit there would stop the capture
         // before the trigger arrives.
         deviceSampleLimit: this.captureLimitSamples,
+        onEnd: () => { if (this.running) void this.stopCapture(); },
       });
     } catch (e) {
       this.running = false;
@@ -1394,6 +1477,10 @@ function clampSettings(
     .map((c) => ({ ...c }));
   const triggerModes: Record<number, TriggerMode> = { ...savedModes };
   for (const c of triggerConditions) {
+    // 'edge' (either direction) is engine-supported but has no glyph in the inline
+    // five-state picker, so a saved/debug condition using it maps to X here and the
+    // condition is dropped on the next settings edit. Unsupported in this UI on
+    // purpose; pick rising or falling instead.
     triggerModes[c.channel] = c.kind === 'level' ? (c.level ? 'high' : 'low')
       : c.kind === 'rising' ? 'rising' : c.kind === 'falling' ? 'falling' : 'dont-care';
   }
