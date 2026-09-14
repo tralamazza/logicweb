@@ -87,6 +87,7 @@ export class WorkerSlogicDevice implements Device {
   private sink: SampleSink | null = null;
   private dropout: DropoutSink | null = null;
   private triggerState: CaptureStartOptions['onTriggerState'] | null = null;
+  private captureEnd: CaptureStartOptions['onEnd'] | null = null;
   private readonly inFlight = new Map<number, Promise<void>>();
   private stopped = false;
 
@@ -146,10 +147,11 @@ export class WorkerSlogicDevice implements Device {
     this.sink = sink;
     this.dropout = onDropout ?? null;
     this.triggerState = options.onTriggerState ?? null;
+    this.captureEnd = options.onEnd ?? null;
     this.pageStalls.start();
-    // Functions cannot cross a structured clone: the callback stays here and the worker
+    // Functions cannot cross a structured clone: the callbacks stay here and the worker
     // reports transitions as messages (the type enforces that split).
-    const { onTriggerState: _ignored, ...wire } = options;
+    const { onTriggerState: _ignored, onEnd: _ignoredEnd, ...wire } = options;
     const started = this.waitFor('started', this.timeouts.openTimeoutMs);
     post(this.worker, {
       kind: 'start',
@@ -295,6 +297,9 @@ export class WorkerSlogicDevice implements Device {
         return;
       case 'trigger':
         this.triggerState?.(message.state, message.index);
+        return;
+      case 'ended':
+        this.captureEnd?.();
         return;
       case 'trace':
         this.onTrace?.(message);

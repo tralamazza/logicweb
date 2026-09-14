@@ -898,6 +898,138 @@ async function main(): Promise<void> {
       `chunks=${chunks.length}, states=${states.join(',')}`);
   }
   {
+    // The worker pump *transfers* each chunk's ArrayBuffer to the page (types.ts says
+    // the sink owns it). The trigger used to emit views into the live transfer buffer
+    // and then keep reading that buffer: the moment the sink transferred it, every
+    // post-trigger sample still in the fragment was read from a detached buffer and
+    // silently lost. The sink below detaches exactly the way postMessage does.
+    const bytes = new Array<number>(1024).fill(0);
+    bytes.splice(0, 14,
+      0xaa, 0xbb, 0xcc, 0xdd, // acquisition head
+      0, 0, 0, 0, 1, 0, 1, 0, 0, 0); // samples 0,0,1,1,0
+    const fake = new FakeStreamDevice(recorded(), [{ kind: 'data', bytes }]);
+    const dev = new Slogic16U3(fake as unknown as USBDevice);
+    const chunks: number[][] = [];
+    const states: string[] = [];
+    await dev.open();
+    await dev.start(
+      { channels: 16, samplerate: 16e6, thresholdVolts: 1.6 },
+      (chunk) => {
+        chunks.push(Array.from(chunk));
+        structuredClone(null, { transfer: [chunk.buffer as ArrayBuffer] });
+      }, undefined,
+      {
+        tuning: { depth: 4, transferBytes: 1024 },
+        softwareTrigger: {
+          channels: 16, channel: 0, kind: 'rising', preTriggerSamples: 2, maxSamples: 5,
+        },
+        onTriggerState: (state, index) =>
+          states.push(index === undefined ? state : `${state}@${index}`),
+      },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    await dev.stop();
+    check('trigger output survives a sink that transfers every chunk away',
+      chunks.flat().join(',') === '0,0,0,0,1,0,1,0,0,0', chunks.flat().join(','));
+    // The T=0 marker, the relative axis and the cursor times all hang off this index
+    // equalling the store position of the trigger sample: two retained pre-trigger
+    // samples put it at 2.
+    check('the trigger sample index crosses the device layer intact',
+      states.join(',') === 'waiting,triggered@2', states.join(','));
+  }
+  {
+    // With coalescing on, the emitted trigger window is smaller than one sink block, so
+    // it used to sit in the transport until stop() - and a caller that stops when its
+    // sample count is reached never got there ("stuck at 990 ms of a 1 s capture").
+    // The transport must flush the tail when the trigger budget completes, and say the
+    // capture is over through onEnd.
+    const bytes = new Array<number>(1024).fill(0);
+    bytes.splice(0, 14, 0xaa, 0xbb, 0xcc, 0xdd, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0);
+    const fake = new FakeStreamDevice(recorded(), [{ kind: 'data', bytes }]);
+    const dev = new Slogic16U3(fake as unknown as USBDevice);
+    const chunks: number[][] = [];
+    let ended = 0;
+    await dev.open();
+    await dev.start(
+      { channels: 16, samplerate: 16e6, thresholdVolts: 1.6 },
+      (chunk) => { chunks.push(Array.from(chunk)); }, undefined,
+      {
+        tuning: { depth: 4, transferBytes: 1024, coalesceBytes: 4096 },
+        softwareTrigger: {
+          channels: 16, channel: 0, kind: 'rising', preTriggerSamples: 2, maxSamples: 5,
+        },
+        onEnd: () => { ended += 1; },
+      },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const beforeStop = chunks.flat().join(',');
+    await dev.stop();
+    check('a coalesced trigger capture flushes its tail when the budget completes',
+      beforeStop === '0,0,0,0,1,0,1,0,0,0', beforeStop || '(nothing before stop)');
+    check('the completed trigger capture reports end-of-capture exactly once',
+      ended === 1, String(ended));
+  }
+  {
+    // Same tail, timer mode: the device stops itself at R32_SAMPLE_LEN, and the last
+    // sub-block of samples must reach the sink then - not when the user gives up and
+    // presses stop - followed by exactly one onEnd.
+    const fake = new FakeStreamDevice(recorded32(), [], 0x3032);
+    fake.autoStream = true;
+    fake.bytesPerSample = 4;
+    const dev = new Slogic16U3(fake as unknown as USBDevice);
+    const wanted = 1000;
+    let bytes = 0;
+    let ended = 0;
+    await dev.open();
+    await dev.start(
+      { channels: 32, samplerate: 100e6, thresholdVolts: 1.6 },
+      (chunk) => { bytes += chunk.byteLength; }, undefined,
+      {
+        deviceSampleLimit: wanted,
+        tuning: { depth: 4, transferBytes: 1024, coalesceBytes: 1 << 20 },
+        onEnd: () => { ended += 1; },
+      },
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    const samplesBeforeStop = bytes / 4;
+    await dev.stop();
+    check('a coalesced device-length capture flushes its tail before stop()',
+      samplesBeforeStop >= wanted, `${samplesBeforeStop} of ${wanted} samples before stop`);
+    check('the device-length capture reports end-of-capture exactly once',
+      ended === 1, String(ended));
+  }
+  {
+    // Below 8 channels the 4 dropped head bytes are 8 device samples (two per wire
+    // byte at 4ch), not 4: counting them at the stored bytes-per-sample left
+    // receivedDeviceSamples() 4 short of the armed limit forever, so a 4-channel
+    // device-length capture never reported its end. The script delivers *exactly*
+    // the armed length in wire bytes, so an off-by-anything here fails the check.
+    const wanted = 1000; // arms ceil((1008+2048)/1024) = 3 units = 1024 device samples
+    const wireBytes = 1024 / 2; // 4ch: two samples per wire byte, head included
+    const fake = new FakeStreamDevice(recorded(), [
+      { kind: 'data', bytes: new Array<number>(wireBytes).fill(0) },
+    ]);
+    const dev = new Slogic16U3(fake as unknown as USBDevice);
+    let samples = 0;
+    let ended = 0;
+    await dev.open();
+    await dev.start(
+      { channels: 4, samplerate: 16e6, thresholdVolts: 1.6 },
+      (chunk) => { samples += chunk.length; }, undefined,
+      {
+        tuning: { depth: 4, transferBytes: 1024 },
+        deviceSampleLimit: wanted,
+        onEnd: () => { ended += 1; },
+      },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const endedBeforeStop = ended;
+    await dev.stop();
+    check('a 4-channel device-length capture counts its packed head correctly',
+      endedBeforeStop === 1 && samples === (wireBytes - 4) * 2,
+      `ended=${endedBeforeStop}, samples=${samples} of ${(wireBytes - 4) * 2}`);
+  }
+  {
     // Match the result of libsigrok's allocation probe under Linux's common
     // 16 MiB usbfs URB budget: five 3,129,344-byte requests fit, larger queues fail.
     const at100 = deriveStreamTuning(
@@ -1346,22 +1478,29 @@ async function main(): Promise<void> {
     const errors: string[] = [];
     const triggers: string[] = [];
     const dropouts: string[] = [];
+    const ends: string[] = [];
     brokenDevice.onError = (error) => errors.push(String(error));
     const brokenStart = brokenDevice.start(
       { channels: 32, samplerate: 200e6, thresholdVolts: 1.6 },
       () => { throw new Error('the store refused the chunk'); },
       (position, missing) => { dropouts.push(`${position}+${missing}`); },
-      { onTriggerState: (state, index) => { triggers.push(`${state}@${index}`); } },
+      {
+        onTriggerState: (state, index) => { triggers.push(`${state}@${index}`); },
+        onEnd: () => { ends.push('ended'); },
+      },
     );
     exploding.emit({ kind: 'started' });
     await brokenStart;
     exploding.emit({ kind: 'dropout', position: 10, missing: 4 });
     exploding.emit({ kind: 'trigger', state: 'triggered', index: 12 });
+    exploding.emit({ kind: 'ended' });
     exploding.emit({ kind: 'error', message: 'bulk transfer failed' });
     exploding.chunk(21, 4);
     check('a dropout crosses the thread boundary', dropouts.join(',') === '10+4', dropouts.join(','));
     check('a trigger transition crosses the thread boundary',
       triggers.length === 1 && triggers[0] === 'triggered@12', triggers.join(','));
+    check('end-of-capture crosses the thread boundary',
+      ends.join(',') === 'ended', ends.join(','));
     check('a transport error reaches the page as an error',
       errors.some((e) => e.includes('bulk transfer failed')), errors.join('|'));
     check('a sink that throws still releases the worker slot',

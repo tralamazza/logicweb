@@ -35,11 +35,11 @@ export type ToWorker =
   | { kind: 'ack'; id: number };
 
 /**
- * `StartOptions` minus the callback: a function cannot cross a structured clone, so the
- * worker reports trigger transitions as messages instead (the page turns them back into
- * the `onTriggerState` call the device layer expects).
+ * `StartOptions` minus the callbacks: a function cannot cross a structured clone, so the
+ * worker reports trigger transitions and end-of-capture as messages instead (the page
+ * turns them back into the `onTriggerState` / `onEnd` calls the device layer expects).
  */
-export type WorkerStartOptions = Omit<StartOptions, 'onTriggerState'>;
+export type WorkerStartOptions = Omit<StartOptions, 'onTriggerState' | 'onEnd'>;
 
 /**
  * A chunk of samples. `buffer` is transferred, not copied, so the worker hands over its
@@ -68,6 +68,8 @@ export type FromWorker =
   | ChunkMessage
   | { kind: 'dropout'; position: number; missing: number }
   | { kind: 'trigger'; state: 'waiting' | 'triggered' | 'not-found'; index?: number }
+  /** The capture delivered everything it ever will; every chunk of it precedes this. */
+  | { kind: 'ended' }
   | { kind: 'trace'; entry: TraceEntry }
   | { kind: 'error'; message: string }
   | { kind: 'stats'; stats: Stats }

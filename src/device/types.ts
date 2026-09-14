@@ -28,6 +28,16 @@ export interface CaptureStartOptions {
   onTriggerState?: (
     state: 'waiting' | 'triggered' | 'not-found', triggerSampleIndex?: number,
   ) => void;
+  /**
+   * The capture ended on its own and every byte it will ever produce has been handed
+   * to the sink: the device reached its programmed length (`deviceSampleLimit`), the
+   * software trigger emitted its full budget, or a bounded trigger search ended with
+   * no match (nothing was delivered; `onTriggerState` has already said `not-found`).
+   * Fired at most once per capture, after the last sink call for it, and never for a
+   * capture the caller stopped manually - so the caller can stop() on it without a
+   * sample count of its own having to agree with the device's to the sample.
+   */
+  onEnd?: () => void;
 }
 
 /**
