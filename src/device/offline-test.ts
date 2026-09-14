@@ -256,10 +256,19 @@ class FakeStreamDevice extends FakeSlogic {
           this.parked.push({ action: { kind: 'hang' }, resolve, reject });
         });
       }
-      const available = Math.floor(this.streamLeftSamples) * this.bytesPerSample;
-      const n = Math.min(_len, Math.max(1024, available));
-      this.streamLeftSamples -= n / this.bytesPerSample;
-      return Promise.resolve({ status: 'ok', data: view(new Array<number>(n).fill(0)) });
+      const available = Math.floor(this.streamLeftSamples * this.bytesPerSample);
+      if (available < _len) {
+        // The real firmware ends its upload at the armed length with no short packet
+        // and no ZLP (measured on S/N 202608052052, 2026-09-14): a read that reaches
+        // past the end fills partially and then NAKs forever. Completing it short
+        // here, as this model used to, hid exactly the hang the driver's final-read
+        // clamp exists to prevent.
+        return new Promise<USBInTransferResult>((resolve, reject) => {
+          this.parked.push({ action: { kind: 'hang' }, resolve, reject });
+        });
+      }
+      this.streamLeftSamples -= _len / this.bytesPerSample;
+      return Promise.resolve({ status: 'ok', data: view(new Array<number>(_len).fill(0)) });
     }
     const action: TransferAction = this.script[index] ?? { kind: 'hang' };
     if (action.kind === 'data') {
@@ -1028,6 +1037,39 @@ async function main(): Promise<void> {
     check('a 4-channel device-length capture counts its packed head correctly',
       endedBeforeStop === 1 && samples === (wireBytes - 4) * 2,
       `ended=${endedBeforeStop}, samples=${samples} of ${(wireBytes - 4) * 2}`);
+  }
+  {
+    // The real board's end-of-upload (measured on S/N 202608052052, 2026-09-14): the
+    // firmware stops at the armed length with no short packet and no ZLP, so a read
+    // reaching past the end never completes and the capture's tail is stuck in it -
+    // a 1 s capture that sits at 99% until the user presses Stop. The driver must
+    // clamp its final read to the bytes that remain (libsigrok protocol.c:79-82).
+    // Here the transfer size (5120) does not divide the armed length (4096 wire
+    // bytes), so an unclamped final read hangs and the check times out.
+    const fake = new FakeStreamDevice(recorded32(), [], 0x3032);
+    fake.autoStream = true;
+    fake.bytesPerSample = 4;
+    const dev = new Slogic16U3(fake as unknown as USBDevice);
+    const wanted = 1000; // arms 1024 device samples = 4096 wire bytes
+    let bytes = 0;
+    let ended = 0;
+    await dev.open();
+    await dev.start(
+      { channels: 32, samplerate: 100e6, thresholdVolts: 1.6 },
+      (chunk) => { bytes += chunk.byteLength; }, undefined,
+      {
+        deviceSampleLimit: wanted,
+        tuning: { depth: 4, transferBytes: 5 * 1024 },
+        onEnd: () => { ended += 1; },
+      },
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    const endedBeforeStop = ended;
+    const samplesBeforeStop = bytes / 4;
+    await dev.stop();
+    check('the final read is clamped so a no-ZLP device end still completes',
+      endedBeforeStop === 1 && samplesBeforeStop >= wanted,
+      `ended=${endedBeforeStop}, samples=${samplesBeforeStop} of ${wanted}`);
   }
   {
     // Match the result of libsigrok's allocation probe under Linux's common
