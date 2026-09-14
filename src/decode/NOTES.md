@@ -269,16 +269,18 @@ fallback moved to `registry.displayRows()`, labelled as a UI choice.
 
 ## Packaging
 
-The worker fetches `/pyodide/pyodide.mjs` and imports it from a **blob URL**.
-Deliberate: bundling Pyodide's ESM makes Vite code-split the worker, which its
-default `worker.format: 'iife'` cannot do; a classic worker fixes production but
-breaks `vite` dev; a plain dynamic import works in production but 500s in dev
-(`?import` appended). A blob URL is invisible to Vite in both. Pyodide resolves
-siblings as `` `${indexURL}pyodide.asm.mjs` `` - absolute - so this is safe.
+`npm run dist` produces a portable `dist/index.html`: the bundled classic Blob
+worker, Pyodide loader/module/WASM, Python stdlib, lock file, decoder ZIP, CSS,
+favicon and source maps are all embedded. Chromium refuses a module Blob worker
+whose top-level document is `file://`, hence the classic worker. Pyodide 314's
+generated loader/module have no static imports; the worker evaluates those two
+generated files and supplies an in-memory `instantiateWasm` callback instead of
+letting the default loader fetch sibling files. `tools/portable-smoke.mjs`
+verifies a UART known answer from `file://` and rejects any non-Blob side request.
 
-**The clean fix is `worker: { format: 'es' }` in a root `vite.config.ts`.** That
-file is shared and not this module's to create; once the lead adds it, the blob
-indirection can be deleted.
+`npm run dev` keeps the large assets external for faster rebuilds, but uses the
+same worker code and evaluation path. Only the portable build sets
+`LOGICWEB_PORTABLE=1` and injects the base64 payloads.
 
 ## What is still unverified
 

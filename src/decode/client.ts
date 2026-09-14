@@ -15,6 +15,7 @@
 import { DEFAULT_DECODE_TIMEOUT_MS } from './limits';
 import type { WorkerConfig, WorkerRequest, WorkerResponse } from './protocol';
 import type { DecodeRequest, DecodeResult, DecoderInfo } from './types';
+import DecodeWorker from './worker.ts?worker&inline';
 
 interface Pending {
   resolve: (v: never) => void;
@@ -75,7 +76,10 @@ export class DecodeClient {
     if (this.disposed) throw new Error('DecodeClient has been disposed');
     if (this.worker) return this.worker;
 
-    const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+    // Vite's inline worker wrapper turns the complete bundled worker into a blob.
+    // That is essential for the portable build: file:// pages cannot reliably start
+    // a neighbouring module worker because every file has an opaque origin.
+    const w = new DecodeWorker();
     w.onmessage = (ev: MessageEvent<WorkerResponse>) => this.onMessage(ev.data);
     w.onerror = (ev) => {
       // A worker-level error kills every in-flight request; failing them all

@@ -6,9 +6,13 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
     "vendor": "node src/decode/tools/vendor-assets.mjs",
+    "dist": "node src/decode/tools/build-dist.mjs",
+    "check:portable": "node src/decode/tools/portable-smoke.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5174",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "bench:window": "node src/device/tools/window-bench.mjs",
+    "bench:geometry": "node src/device/tools/geometry-bench.mjs"
   },
   "devDependencies": {
     "@types/w3c-web-usb": "^1.0.14",
