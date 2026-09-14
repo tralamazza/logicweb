@@ -263,9 +263,17 @@ Two other honest gaps:
 - **Cold decode.** `src/decode` is ~850 ms cold and 0.9-4.9 ms warm; a native tool is 119-682 ms
   every time. The shell calls `warmup()` on construction so the cold start is paid before
   a user asks for anything, but the first ~1 s after page load is slower than the bar.
-- **No analog channels, no data table, no marker pairs, no trigger.** The trigger UI is
-  not implemented: the SLogic16 U3 driver in `src/device` exposes no trigger, so a
-  trigger panel would be a control that does nothing.
+- **No analog channels, no data table, no marker pairs.** Software triggering is now
+  available beside each channel label. It is host-side (the SLogic firmware has no
+  trigger register): a single bounded rolling pre-trigger buffer supports per-channel
+  level/rising/falling/edge conditions combined with logical AND, and reports Waiting,
+  Triggered or No trigger. Each channel has one of five glyph modes (falling Z, rising
+  mirrored-Z, high, low, or X/don't-care). The right panel owns the global pre-trigger
+  buffer and Enable Mask; turning the mask off preserves all glyph modes. After a match,
+  a vertical `T` marker identifies the shared AND-match sample; it is time zero and the
+  retained pre-trigger region is negative time.
+  Timer captures follow the same convention: their duration starts only after the shared
+  trigger matches; while waiting, the ring continues to roll indefinitely until Stop.
 
 ## 7. Limits surfaced in the UI rather than hit
 
@@ -282,7 +290,8 @@ Two other honest gaps:
   because a decode can be asked for a sub-range.
 ## 9. What is stubbed, and what is not verified
 
-- **Trigger configuration is not implemented.** See section 6.
+- **Hardware trigger configuration is not implemented.** The available trigger is the
+  bounded host-side matcher described in section 6.
 - **`.sr` (sigrok) sessions load, logic-only.** `src/ui/srLoad.ts` reads the zip
   (stored + deflated members, v1 and v2 member naming) and builds an edge store from the
   per-probe transition lists, so `reference/hwcaptures/{i2c,spi,uart}.sr` open straight

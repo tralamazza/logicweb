@@ -78,7 +78,11 @@ export function minorLabel(deltaPs: number, stepPs: number): string {
   const v = deltaPs / PS_PER[u];
   const sign = v < 0 ? '-' : '+';
   const mag = Math.abs(v);
-  const txt = Number.isInteger(mag) ? String(mag) : mag.toFixed(3).replace(/\.?0+$/, '');
+  // Picoseconds are the display floor. A repeating sample period such as
+  // 1e12/1.2e9 = 833.333... ps is shown as 833 ps, not false sub-ps precision.
+  const txt = u === 'ps'
+    ? String(Math.round(mag))
+    : Number.isInteger(mag) ? String(mag) : mag.toFixed(3).replace(/\.?0+$/, '');
   return `${sign}${txt} ${u}`;
 }
 

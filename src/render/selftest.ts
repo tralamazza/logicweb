@@ -22,6 +22,7 @@ import { planColumns } from './columns.js';
 import { computeLayout } from './layout.js';
 import { DARK_THEME, DEFAULT_ROW_HEIGHT_CSS_PX as ROWH, parseHexColor } from './theme.js';
 import { MIN_SAMPLES_ON_SCREEN, ViewTransform, WheelIntent, wheelSpanFactor } from './transform.js';
+import { computeTicks } from '../ui/timeAxis.js';
 
 export interface Check {
   name: string;
@@ -75,11 +76,39 @@ function testTransform(): void {
   const ft = wheelSpanFactor(120, { isPhysicalWheel: false, shift: false });
   check('wheel-trackpad-continuous', near(ft, 2, 1e-12), `${ft}`);
 
-  // [SOURCE] zoom-in is clamped at 20 samples on screen.
+  // Maximum zoom is ten samples so each sample-aligned time tick has room.
   const t3 = new ViewTransform(1000, 0, 1_000_000);
   t3.set(500, 502);
   t3.clampTo(1_000_000);
-  check('zoom-in-clamped-at-20', near(t3.span, MIN_SAMPLES_ON_SCREEN, 1e-9), `span ${t3.span}`);
+  check('zoom-in-clamped-at-10', near(t3.span, MIN_SAMPLES_ON_SCREEN, 1e-9), `span ${t3.span}`);
+
+  // At maximum zoom, the time grid follows the sampling period rather than rounding
+  // non-decimal periods up to a power of ten.
+  const sampleTickCases = [
+    [100e6, 10_000, '+10 ns'],
+    [200e6, 5_000, '+5 ns'],
+    [400e6, 2_500, '+2.5 ns'],
+    [1_200e6, 1e12 / 1_200e6, '+833 ps'],
+  ] as const;
+  for (const [rate, periodPs, label] of sampleTickCases) {
+    const ticks = computeTicks(0, MIN_SAMPLES_ON_SCREEN * periodPs, 1000, rate);
+    check(
+      `sample-tick-${rate}`,
+      near(ticks.minorPs, periodPs, 1e-9) && ticks.ticks[1]?.label === label,
+      `${ticks.minorPs} ps, ${ticks.ticks[1]?.label}`,
+    );
+  }
+
+  // Once a trigger is known the axis is relative to T=0, so the retained prefix
+  // must expose negative major labels and an exact zero tick at the trigger.
+  const triggeredTicks = computeTicks(-20e9, 20e9, 1000, 100e6);
+  const zero = triggeredTicks.ticks.find((tick) => tick.ps === 0);
+  check(
+    'trigger-axis-negative-prefix-and-zero-origin',
+    triggeredTicks.ticks.some((tick) => tick.ps < 0 && tick.label.startsWith('-')) &&
+      zero?.major === true && zero.label === '0 s' && near(zero.x, 500, 1e-9),
+    `zero=${zero?.label}@${zero?.x}`,
+  );
 
   // Zooming out past the end is allowed and pins to sample 0.
   const t4 = new ViewTransform(1000, 0, 1000);
@@ -91,6 +120,14 @@ function testTransform(): void {
   const t5 = new ViewTransform(1000, 0, 10_000_000);
   t5.clampTo(30_000, { minVisibleFraction: 0 });
   check('follow-keeps-span', t5.span === 10_000_000 && t5.start === 0, `[${t5.start}, ${t5.end})`);
+
+  // A live capture shorter than its initial window must contract to the data and keep
+  // the newest sample on the right edge, rather than leaving a blank tail.
+  const t6 = new ViewTransform(1000, 0, 10_000_000);
+  t6.set(0, 10_000_000);
+  t6.set(0, 2_000);
+  t6.clampTo(2_000, { minVisibleFraction: 0, minSpan: Math.min(MIN_SAMPLES_ON_SCREEN, 2_000) });
+  check('follow-startup-shrinks-to-live-edge', t6.start === 0 && t6.end === 2_000, `[${t6.start}, ${t6.end})`);
 
   // [SOURCE] wheel intent locks after 5 events in a 200 ms window.
   const wi = new WheelIntent();
@@ -449,7 +486,9 @@ function testLiveAppend(): void {
   const r = new WaveformRenderer({ canvas, store, devicePixelRatio: 1, preserveDrawingBuffer: true });
   r.resize(600, 16 * ROWH);
   store.append(gen.next().value as Uint8Array);
-  r.setViewport(0, store.length);
+  // Start with a window wider than the currently captured prefix, as App does at
+  // capture start. Follow mode must contract it until the live edge reaches the right.
+  r.setViewport(0, store.length * 16);
   r.setFollowLatest(true);
 
   let frames = 0;

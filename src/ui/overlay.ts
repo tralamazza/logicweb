@@ -218,6 +218,30 @@ export class Overlay {
     c.restore();
   }
 
+  /** The sample where all software-trigger conditions became true: this is T=0. */
+  drawTrigger(x: number): void {
+    const c = this.ctx;
+    if (x < -20 || x > this.wCss + 20) return;
+    const px = Math.round(x) + 0.5;
+    c.save();
+    c.strokeStyle = COLORS.warning;
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(px, 0);
+    c.lineTo(px, this.hCss);
+    c.stroke();
+    c.font = 'bold 10px -apple-system, BlinkMacSystemFont, sans-serif';
+    c.textBaseline = 'top';
+    const label = 'T';
+    const w = c.measureText(label).width + 10;
+    c.fillStyle = COLORS.warning;
+    roundRect(c, x - w / 2, 0, w, 15, 2);
+    c.fill();
+    c.fillStyle = COLORS.bg10;
+    c.fillText(label, x - w / 2 + 5, 2);
+    c.restore();
+  }
+
   /** The live edge during a capture: where the newest sample is. */
   drawLiveEdge(x: number): void {
     const c = this.ctx;

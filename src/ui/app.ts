@@ -9,13 +9,16 @@
  * docs/ARCHITECTURE.md asks of `src/ui`.
  */
 
-import { appendLostSamples, createSampleStore } from '../data/index.js';
-import type { SampleStore } from '../data/types.js';
 import {
-  MAX_SAMPLERATE_HZ, getGrantedDevices, requestDevice, vrefCode,
+  appendLostSamples, createSampleStore, MAX_SOFTWARE_TRIGGER_PREFIX_BYTES,
+} from '../data/index.js';
+import type { SampleStore } from '../data/types.js';
+import { bytesPerSampleForChannels, isChannelCount, type ChannelCount } from '../types.js';
+import {
+  MAX_SAMPLERATE_HZ, getGrantedDevicesOnBestThread, requestDeviceOnBestThread, vrefCode,
   type CaptureConfig, type Device,
 } from '../device/index.js';
-import { Slogic16U3 } from '../device/slogic16u3.js';
+import { WorkerSlogicDevice, workerTransport } from '../device/workerTransport.js';
 import { WheelIntent, wheelSpanFactor } from '../render/index.js';
 import {
   AnnotationIndex, DecodeCancelledError, DecodeTimeoutError, EDGE_BUDGET, MAX_SAMPLE,
@@ -36,7 +39,7 @@ import { Overlay, type HoverMeasurement } from './overlay.js';
 import { StoreRef } from './storeRef.js';
 import {
   analyzerColor, defaultChannels, channelColor,
-  type AnalyzerState, type CaptureSettings, type ChannelState,
+  type AnalyzerState, type CaptureSettings, type ChannelState, type TriggerMode,
 } from './state.js';
 import { computeTicks, drawAxis, type TickSet } from './timeAxis.js';
 import { WaveformStack, type RowSpec } from './waveformStack.js';
@@ -58,7 +61,12 @@ export class App {
   private readonly channelList: ChannelList;
   private readonly capturePanel: CapturePanel;
   private readonly analyzerPanel: AnalyzerPanel;
-  private readonly decodeClient = sharedDecodeClient();
+  private readonly decodeClient = sharedDecodeClient({
+    // Resolve from the document, not from the worker script. This supports static sites
+    // hosted below a subdirectory and keeps all runtime files together in dist/.
+    pyodideIndexURL: new URL('./pyodide/', document.baseURI).href,
+    decodersURL: new URL('./decoders/decoders.zip', document.baseURI).href,
+  });
 
   private channels: ChannelState[] = defaultChannels(16);
   /** Display order, holding capture channel indices. */
@@ -69,15 +77,24 @@ export class App {
 
   private settings: CaptureSettings = {
     channels: 16, samplerate: 16e6, thresholdVolts: 1.2, mode: 'timer', seconds: 1,
+    testMode: 0, triggerEnableMask: false, softwareTrigger: false, triggerModes: {},
+    triggerConditions: [], triggerChannel: 0,
+    triggerKind: 'rising', triggerLevel: 1, preTriggerPercent: 10,
   };
 
   private device: Device | null = null;
+  private rateCeilings: Readonly<Record<number, number>> = MAX_SAMPLERATE_HZ;
   private running = false;
+  /** True while WebUSB transfers from the previous run are being cancelled and drained. */
+  private stopping = false;
   private captureStart = 0;
   private captureBytes = 0;
   /** Samples the device could not deliver, appended as filler and marked as gaps. */
   private lostSamples = 0;
   private captureLimitSamples = 0;
+  private triggerState: 'off' | 'waiting' | 'triggered' | 'not-found' = 'off';
+  /** Trigger sample position in SampleStore; the time axis labels this sample T=0. */
+  private triggerSampleIndex: number | null = null;
 
   private captureLabel = 'no capture';
   private statusError = '';
@@ -123,15 +140,27 @@ export class App {
       onRename: (i, name) => { this.channels[i]!.name = name; this.relayout(); },
       onReorder: (from, to) => this.reorder(from, to),
       onRemoveAnalyzer: (id) => this.removeAnalyzer(id),
+      onSetTrigger: (channel, mode) => this.setTriggerMode(channel, mode),
     });
 
     const panelHost = document.createElement('div');
     this.el.side.appendChild(panelHost);
     this.capturePanel = new CapturePanel(panelHost, {
-      onSettings: (s) => { this.settings = clampSettings(s); this.renderPanels(); },
+      onSettings: (s) => {
+        const next = clampSettings(s, this.rateCeilings);
+        if (triggerSettingsChanged(this.settings, next)) {
+          this.triggerState = 'off';
+          this.triggerSampleIndex = null;
+          this.dirty = true;
+        }
+        this.settings = next;
+        this.relayout();
+        this.renderPanels();
+      },
       onToggleChannel: (i, on) => this.setChannelEnabled(i, on),
       onSetAllChannels: (on) => this.setAllChannels(on),
       onConnect: () => void this.connect(),
+      onUsbControl: (command) => this.usbControl(command),
     });
     this.analyzerPanel = new AnalyzerPanel(panelHost, {
       onAttach: (id, ch, opts) => void this.attachAnalyzer(id, ch, opts),
@@ -151,7 +180,8 @@ export class App {
     this.renderPanels();
     this.frame();
 
-    // [src/decode] cold start is ~850 ms and is paid once per worker, so pay it now.
+    // Pay the Pyodide cold start once. The portable build uses only embedded bytes,
+    // including on file://; dev uses the staged files served by Vite.
     this.decodeClient.warmup().then(
       () => { this.decodeWarm = true; this.renderPanels(); },
       (e: unknown) => this.fail('decode worker warmup', e),
@@ -165,6 +195,25 @@ export class App {
 
   private enabledChannels(): ChannelState[] {
     return this.order.map((i) => this.channels[i]!).filter((c) => c.enabled);
+  }
+
+  /** Commit one inline five-state selector immediately. The global checkbox remains the
+   * only enable gate; changing a channel while it is off merely edits saved modes. */
+  private setTriggerMode(channel: number, mode: TriggerMode): void {
+    if (this.running || this.stopping) return;
+    const triggerModes = { ...this.settings.triggerModes, [channel]: mode };
+    const triggerConditions = modesToConditions(triggerModes);
+    const first = triggerConditions[0] ?? {
+      channel, kind: 'level' as const, level: 1 as const,
+    };
+    this.settings = clampSettings({
+      ...this.settings, triggerModes, triggerConditions,
+      triggerChannel: first.channel, triggerKind: first.kind, triggerLevel: first.level,
+    }, this.rateCeilings);
+    this.triggerState = 'off';
+    this.triggerSampleIndex = null;
+    this.relayout();
+    this.renderPanels();
   }
 
   /**
@@ -204,6 +253,14 @@ export class App {
         channel: c,
         heightCss: base + mine.length * ROWS.laneHeight,
         analyzers: this.analyzers.filter((a) => this.chipChannels(a).includes(c.index)),
+        trigger: {
+          active: this.settings.triggerModes[c.index] !== undefined && this.settings.triggerModes[c.index] !== 'dont-care',
+          masked: !this.settings.triggerEnableMask,
+          mode: this.settings.triggerModes[c.index] ?? 'dont-care',
+          disabled: this.running || this.stopping,
+          state: this.triggerState,
+          summary: triggerSummary(this.settings, c.index),
+        },
       });
     }
 
@@ -284,15 +341,17 @@ export class App {
    * 16-channel capture at the 16-channel rate ceiling.
    */
   private afterChannelChange(): void {
-    this.settings = clampSettings({ ...this.settings, channels: this.neededWidth() });
+    this.settings = clampSettings(
+      { ...this.settings, channels: this.neededWidth() }, this.rateCeilings,
+    );
     this.relayout();
     this.renderPanels();
   }
 
   /** Narrowest capture width that covers every enabled channel. */
-  private neededWidth(): 4 | 8 | 16 {
+  private neededWidth(): ChannelCount {
     const hi = Math.max(0, ...this.enabledChannels().map((c) => c.index));
-    return hi < 4 ? 4 : hi < 8 ? 8 : 16;
+    return hi < 4 ? 4 : hi < 8 ? 8 : hi < 16 ? 16 : hi < 32 ? 32 : hi < 64 ? 64 : 128;
   }
 
   private reorder(from: number, to: number): void {
@@ -330,8 +389,11 @@ export class App {
     this.stack.render();
     const view = this.stack.view;
     const sr = this.store.samplerate;
+    const timeOrigin = this.triggerSampleIndex ?? 0;
     const ticks = computeTicks(
-      (view.start / sr) * 1e12, (view.end / sr) * 1e12, wCss,
+      ((view.start - timeOrigin) / sr) * 1e12,
+      ((view.end - timeOrigin) / sr) * 1e12,
+      wCss, sr,
     );
 
     this.drawAxisCanvas(ticks, wCss);
@@ -342,6 +404,10 @@ export class App {
       top: b.top, band: b.band, isChannel: b.spec.kind === 'channel',
     })));
     this.drawLanes(wCss);
+
+    if (this.triggerSampleIndex !== null) {
+      this.overlay.drawTrigger(this.toPx(this.triggerSampleIndex));
+    }
 
     if (this.running && this.store.length > 0) {
       this.overlay.drawLiveEdge(this.toPx(this.store.length));
@@ -677,15 +743,18 @@ export class App {
         channels: this.channels,
         deviceName: this.device?.name ?? null,
         running: this.running,
+        stopping: this.stopping,
         progress: this.running
           ? {
-            seconds: (performance.now() - this.captureStart) / 1000,
+            seconds: this.captureStart > 0 ? (performance.now() - this.captureStart) / 1000 : 0,
             samples: this.store.length,
             bytes: this.captureBytes,
             lost: this.lostSamples,
           }
           : null,
         webusbAvailable: typeof navigator !== 'undefined' && !!navigator.usb,
+        maxSamplerateHz: this.rateCeilings,
+        triggerState: this.triggerState,
       });
     } else {
       this.analyzerPanel.render({
@@ -711,11 +780,12 @@ export class App {
    */
   private renderToolbarState(): void {
     const t = this.el.transport;
-    t.textContent = this.running ? 'Stop' : 'Start';
+    t.textContent = this.stopping ? 'Stopping…' : this.running ? 'Stop' : 'Start';
     t.className = this.running ? 'danger' : 'primary';
-    t.disabled = !this.running && !this.device;
+    t.disabled = this.stopping || (!this.running && !this.device);
     t.title = t.disabled
-      ? 'Connect a device first (rail: ◈)'
+      ? this.stopping ? 'Waiting for pending USB transfers to be cancelled'
+        : 'Connect a device first (rail: ◈)'
       : this.running ? 'Stop the running capture' : 'Start a capture on the connected device';
     this.el.title.textContent = this.captureLabel;
   }
@@ -766,6 +836,18 @@ export class App {
     this.dirty = true;
   }
 
+  /**
+   * A fatal error from the device's read loop. The stream is already dead at this
+   * point, so a capture still marked as running would sit there displaying samples
+   * that can never grow - the 32U3 underrun abort (device layer) is the common case.
+   * stop() re-throws the same error, which fail() reports once more, so the message
+   * the user reads is the read loop's, not a teardown artefact.
+   */
+  private deviceFailed(e: unknown): void {
+    this.fail('device', e);
+    if (this.running && !this.stopping) void this.stopCapture();
+  }
+
   // ------------------------------------------------------------------ captures
 
   private async openFiles(files: File[]): Promise<void> {
@@ -793,8 +875,12 @@ export class App {
     }
     this.cursorA = null;
     this.cursorB = null;
+    this.triggerState = 'off';
+    this.triggerSampleIndex = null;
     this.captureLabel = label;
-    this.settings = clampSettings({ ...this.settings, channels: this.neededWidth() });
+    this.settings = clampSettings(
+      { ...this.settings, channels: this.neededWidth() }, this.rateCeilings,
+    );
     this.relayout();
     this.stack.zoomToFit();
     this.renderPanels();
@@ -820,12 +906,13 @@ export class App {
   private async reconnectGranted(): Promise<void> {
     try {
       if (!navigator.usb) return;
-      const devs = await getGrantedDevices();
+      const devs = await getGrantedDevicesOnBestThread();
       const d = devs[0];
       if (!d) return;
-      await d.open();
-      d.onError = (e) => this.fail('device', e);
+      d.onError = (e) => this.deviceFailed(e);
       this.device = d;
+      this.noteTransport();
+      this.adoptDeviceChannels(d);
       this.renderPanels();
     } catch (e) {
       // Not fatal: the device may be claimed by sigrok-cli, or unplugged.
@@ -836,17 +923,62 @@ export class App {
   private async connect(): Promise<void> {
     try {
       this.statusError = '';
-      const d = await requestDevice();
-      if (d instanceof Slogic16U3) d.onError = (e) => this.fail('device', e);
+      const d = await requestDeviceOnBestThread();
+      d.onError = (e) => this.deviceFailed(e);
       this.device = d;
+      this.noteTransport();
+      this.adoptDeviceChannels(d);
       this.renderPanels();
     } catch (e) {
       this.fail('connect', e);
     }
   }
 
+  /**
+   * The worker is the transport that keeps a re-arm from waiting on this thread, so a
+   * silent fall back to the page is worth saying out loud - it is the difference between
+   * a capture that survives a 30 ms garbage collection at 800 MB/s and one that does not.
+   */
+  private noteTransport(): void {
+    if (!(this.device instanceof WorkerSlogicDevice) && workerTransport.lastFallbackReason) {
+      console.warn(
+        '[slogic] capturing on the page thread: the worker transport could not open the ' +
+        `device (${workerTransport.lastFallbackReason})`,
+      );
+    }
+  }
+
+  private async usbControl(command: string): Promise<string> {
+    if (!this.device) throw new Error('no device connected');
+    if (!this.device.usbControl) throw new Error('this device does not expose a USB console');
+    return this.device.usbControl(command);
+  }
+
+  /** Grow the channel model when a wider SLogic board is connected. */
+  private adoptDeviceChannels(device: Device): void {
+    this.rateCeilings = device.maxSamplerateHz ?? MAX_SAMPLERATE_HZ;
+    const max = device.maxChannels ?? this.channels.length;
+    if (!isChannelCount(max)) {
+      throw new Error(`device reported unsupported channel count ${max}`);
+    }
+    if (this.store.length === 0 && max !== this.store.channelCount) {
+      // The empty store is still rendered before Start is pressed. Grow it together with
+      // the channel rows; otherwise row 16 of a newly-connected 32U3 is queried against
+      // the initial 16-channel placeholder and WaveformRenderer rejects it as out of range.
+      this.storeRef.set(createSampleStore(max, this.settings.samplerate));
+    }
+    if (this.store.length === 0 && max !== this.channels.length) {
+      this.channels = defaultChannels(max);
+      this.order = this.channels.map((c) => c.index);
+    }
+    this.settings = clampSettings(
+      { ...this.settings, channels: max }, this.rateCeilings,
+    );
+    this.relayout();
+  }
+
   private async startCapture(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.stopping) return;
     if (!this.device) { this.fail('start', new Error('no device connected')); return; }
     try {
       this.statusError = '';
@@ -854,6 +986,7 @@ export class App {
         channels: this.settings.channels,
         samplerate: this.settings.samplerate,
         thresholdVolts: this.settings.thresholdVolts,
+        testMode: this.settings.testMode,
       };
       // The device layer maps volts to a DAC code; check it lands somewhere sane before
       // the capture rather than discovering a clipped threshold in the data.
@@ -871,10 +1004,13 @@ export class App {
       }
       this.captureBytes = 0;
       this.lostSamples = 0;
-      this.captureStart = performance.now();
-      this.captureLimitSamples = this.settings.mode === 'timer'
+      this.triggerSampleIndex = null;
+      this.captureStart = this.settings.softwareTrigger ? 0 : performance.now();
+      const postTriggerSamples = this.settings.mode === 'timer'
         ? Math.min(MAX_SAMPLES - 1, Math.round(this.settings.seconds * cfg.samplerate))
         : MAX_SAMPLES - 1;
+      this.captureLimitSamples = postTriggerSamples;
+      this.triggerState = this.settings.softwareTrigger ? 'waiting' : 'off';
       this.captureLabel = `capturing ${cfg.channels} ch @ ${formatRate(cfg.samplerate)}`;
       this.running = true;
       this.relayout();
@@ -884,7 +1020,21 @@ export class App {
       this.setFollow(true);
       this.renderPanels();
 
-      const bytesPerSample = cfg.channels > 8 ? 2 : 1;
+      const bytesPerSample = bytesPerSampleForChannels(cfg.channels);
+      const triggerConditions = this.settings.triggerConditions.length
+        ? this.settings.triggerConditions
+        : [{ channel: this.settings.triggerChannel, kind: this.settings.triggerKind,
+          level: this.settings.triggerLevel }];
+      const preTriggerSamples = this.settings.softwareTrigger ? Math.min(
+        Math.max(0, this.captureLimitSamples - 1),
+        Math.max(0, Math.floor(postTriggerSamples * this.settings.preTriggerPercent / 100)),
+        Math.floor(MAX_SOFTWARE_TRIGGER_PREFIX_BYTES / bytesPerSampleForChannels(cfg.channels)),
+      ) : 0;
+      if (this.settings.softwareTrigger) {
+        // Timer duration starts at the trigger sample. The store budget therefore
+        // includes the retained prefix plus the requested post-trigger duration.
+        this.captureLimitSamples = Math.min(MAX_SAMPLES - 1, postTriggerSamples + preTriggerSamples);
+      }
       await this.device.start(cfg, (chunk) => {
         if (!this.running) return;
         this.captureBytes += chunk.length;
@@ -913,27 +1063,67 @@ export class App {
         if (n === 0) return;
         this.lostSamples += n;
         if (store.length >= this.captureLimitSamples) void this.stopCapture();
+      }, this.settings.softwareTrigger ? {
+        softwareTrigger: {
+          channels: cfg.channels,
+          conditions: triggerConditions.map((c) => ({
+            channel: Math.min(c.channel, cfg.channels - 1), kind: c.kind, level: c.level,
+          })),
+          channel: Math.min(triggerConditions[0]!.channel, cfg.channels - 1),
+          kind: triggerConditions[0]!.kind,
+          level: triggerConditions[0]!.level,
+          preTriggerSamples, maxSamples: this.captureLimitSamples,
+          searchLimitSamples: Number.POSITIVE_INFINITY,
+        },
+        onTriggerState: (state, triggerSampleIndex) => {
+          this.triggerState = state;
+          if (state === 'triggered' && triggerSampleIndex !== undefined) {
+            this.triggerSampleIndex = triggerSampleIndex;
+            this.captureStart = performance.now();
+          }
+          this.dirty = true;
+          this.relayout();
+          this.renderPanels();
+          if (state === 'not-found') void this.stopCapture();
+        },
+      } : {
+        // A timer capture knows its length before RUN, so the device can be told to
+        // stop by itself at that length (R32_SAMPLE_LEN). That is the vendor's own
+        // answer to the overrun that wedges the board, and it is the only end-of-
+        // capture that never requires cutting off a device that is still producing.
+        // Software-trigger mode cannot use it: where the trigger will land is not
+        // known when the device is armed, and a limit there would stop the capture
+        // before the trigger arrives.
+        deviceSampleLimit: this.captureLimitSamples,
       });
     } catch (e) {
       this.running = false;
+      this.triggerState = 'off';
+      this.triggerSampleIndex = null;
+      this.relayout();
       this.fail('start capture', e);
       this.renderPanels();
     }
   }
 
   private async stopCapture(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running || this.stopping) return;
     this.running = false;
+    this.stopping = true;
+    this.renderPanels();
     try {
       await this.device?.stop();
     } catch (e) {
       this.fail('stop capture', e);
+    } finally {
+      this.stopping = false;
     }
     this.setFollow(false);
     const sr = this.store.samplerate;
-    this.captureLabel =
-      `live capture · ${formatCount(this.store.length)} samples @ ${formatRate(sr)} · ` +
-      `${formatDuration(this.store.length / sr)}`;
+    this.captureLabel = this.triggerState === 'not-found'
+      ? `no trigger · ${formatCount(this.store.length)} samples retained`
+      : `live capture · ${formatCount(this.store.length)} samples @ ${formatRate(sr)} · ` +
+        `${formatDuration(this.store.length / sr)}`;
     this.stack.zoomToFit();
     this.relayout();
     this.renderPanels();
@@ -1063,7 +1253,14 @@ export class App {
     attach: (id: string, ch: Record<number, number>, opts: Record<string, string | number> = {}) =>
       this.attachAnalyzer(id, ch, opts),
     setSettings: (s: Partial<CaptureSettings>) => {
-      this.settings = clampSettings({ ...this.settings, ...s });
+      const next = clampSettings({ ...this.settings, ...s }, this.rateCeilings);
+      if (triggerSettingsChanged(this.settings, next)) {
+        this.triggerState = 'off';
+        this.triggerSampleIndex = null;
+        this.dirty = true;
+      }
+      this.settings = next;
+      this.relayout();
       this.renderPanels();
     },
     setPanel: (p: 'device' | 'analyzers' | null) => {
@@ -1138,10 +1335,21 @@ export class App {
       error: this.statusError,
       running: this.running,
       device: this.device?.name ?? null,
+      transport: this.device instanceof WorkerSlogicDevice ? 'worker' : 'page',
+      transportFallback: workerTransport.lastFallbackReason,
       warm: this.decodeWarm,
       samples: this.store.length,
       samplerate: this.store.samplerate,
       channels: this.store.channelCount,
+      triggerState: this.triggerState,
+      triggerSampleIndex: this.triggerSampleIndex,
+      trigger: {
+        enabled: this.settings.softwareTrigger,
+        enableMask: this.settings.triggerEnableMask,
+        preTriggerPercent: this.settings.preTriggerPercent,
+        modes: { ...this.settings.triggerModes },
+        conditions: this.settings.triggerConditions,
+      },
       enabled: this.enabledChannels().map((c) => c.index),
       rows: this.stack.rowSpecs.map((r) => `${r.kind}:${r.channel}:${r.heightCss}`),
       lanes: this.lanes.length,
@@ -1171,10 +1379,76 @@ export class App {
  * from the device layer with no visible control to fix it. Every MAX_SAMPLERATE_HZ value
  * is itself in SAMPLERATES_HZ, so the clamp always lands on a rate the device supports.
  */
-function clampSettings(s: CaptureSettings): CaptureSettings {
-  const samplerate = Math.min(s.samplerate, MAX_SAMPLERATE_HZ[s.channels] ?? 200e6);
+function clampSettings(
+  s: CaptureSettings, ceilings: Readonly<Record<number, number>> = MAX_SAMPLERATE_HZ,
+): CaptureSettings {
+  const samplerate = Math.min(s.samplerate, ceilings[s.channels] ?? 200e6);
   const max = MAX_SAMPLES / samplerate;
-  return { ...s, samplerate, seconds: Math.max(0.001, Math.min(s.seconds, max)) };
+  const savedModes = s.triggerModes ?? {};
+  const configuredConditions = Object.keys(savedModes).length ? modesToConditions(savedModes)
+    : s.triggerConditions.length ? s.triggerConditions : s.softwareTrigger
+      ? [{ channel: s.triggerChannel, kind: s.triggerKind, level: s.triggerLevel }]
+      : [];
+  const triggerConditions = configuredConditions
+    .filter((c) => c.channel >= 0 && c.channel < s.channels)
+    .map((c) => ({ ...c }));
+  const triggerModes: Record<number, TriggerMode> = { ...savedModes };
+  for (const c of triggerConditions) {
+    triggerModes[c.channel] = c.kind === 'level' ? (c.level ? 'high' : 'low')
+      : c.kind === 'rising' ? 'rising' : c.kind === 'falling' ? 'falling' : 'dont-care';
+  }
+  return {
+    ...s, samplerate, seconds: Math.max(0.001, Math.min(s.seconds, max)),
+    triggerEnableMask: s.triggerEnableMask ?? true,
+    // Enable Mask is the sole global gate. Turning it off must not erase the
+    // per-channel modes; turning it back on must restore the same conditions.
+    softwareTrigger: s.triggerEnableMask !== false && triggerConditions.length > 0,
+    triggerModes,
+    triggerChannel: Math.max(0, Math.min(s.triggerChannel, s.channels - 1)),
+    triggerConditions,
+    preTriggerPercent: Math.max(0, Math.min(75, s.preTriggerPercent)),
+  };
+}
+
+function modesToConditions(modes: Record<number, TriggerMode>): CaptureSettings['triggerConditions'] {
+  return Object.keys(modes).map(Number).sort((a, b) => a - b).flatMap((channel): CaptureSettings['triggerConditions'] => {
+    const mode = modes[channel];
+    if (!mode || mode === 'dont-care') return [];
+    if (mode === 'low' || mode === 'high') return [{ channel, kind: 'level' as const, level: mode === 'high' ? 1 as const : 0 as const }];
+    return [{ channel, kind: mode, level: 1 as const }];
+  });
+}
+
+function triggerSummary(s: CaptureSettings, channel: number): string {
+  const c = s.triggerConditions.find((x) => x.channel === channel);
+  const kind = c?.kind ?? s.triggerKind;
+  const level = c?.level ?? s.triggerLevel;
+  const condition = kind === 'level'
+    ? `Level ${level}`
+    : kind === 'rising'
+      ? 'Rising edge'
+      : kind === 'falling'
+        ? 'Falling edge'
+        : 'Any edge';
+  const total = s.triggerConditions.length;
+  return `${condition} · ${s.preTriggerPercent}% pre-trigger${total > 1 ? ` · AND ${total} conditions` : ''}`;
+}
+
+/** Configuration edits describe a future capture; they must not leave the previous
+ * capture's T origin and relative axis attached to a newly selected trigger. */
+function triggerSettingsChanged(a: CaptureSettings, b: CaptureSettings): boolean {
+  if (a.softwareTrigger !== b.softwareTrigger || a.triggerEnableMask !== b.triggerEnableMask ||
+      a.triggerChannel !== b.triggerChannel || a.triggerKind !== b.triggerKind ||
+      a.triggerLevel !== b.triggerLevel || a.preTriggerPercent !== b.preTriggerPercent ||
+      a.triggerConditions.length !== b.triggerConditions.length) return true;
+  const am = a.triggerModes ?? {};
+  const bm = b.triggerModes ?? {};
+  const modeKeys = new Set([...Object.keys(am), ...Object.keys(bm)]);
+  for (const key of modeKeys) if (am[Number(key)] !== bm[Number(key)]) return true;
+  return a.triggerConditions.some((x, i) => {
+    const y = b.triggerConditions[i];
+    return !y || x.channel !== y.channel || x.kind !== y.kind || x.level !== y.level;
+  });
 }
 
 function must<T extends HTMLElement>(id: string): T {

@@ -309,8 +309,8 @@ async function main(): Promise<void> {
       ['analog capturefile', await mk('[device 1]\ncapturefile=analog-1\ntotal probes=4\nsamplerate=10 kHz\nunitsize=1\n', new Uint8Array(16)), /not a logic unit/],
       ['no capturefile', await mk('[device 1]\ntotal probes=4\nsamplerate=10 kHz\nunitsize=1\n', new Uint8Array(16)), /no logic capturefile/],
       ['bad samplerate', await mk(base.replace('10 kHz', 'quack'), new Uint8Array(16)), /unparsable samplerate/],
-      ['unitsize 3', await mk(base.replace('unitsize=1', 'unitsize=3'), new Uint8Array(16)), /unitsize 3 is not 1 or 2/],
-      ['zero probes', await mk(base.replace('total probes=4', 'total probes=0'), new Uint8Array(16)), /outside 1\.\.16/],
+      ['unitsize 17', await mk(base.replace('unitsize=1', 'unitsize=17'), new Uint8Array(16)), /outside 1..16/],
+      ['zero probes', await mk(base.replace('total probes=4', 'total probes=0'), new Uint8Array(16)), /outside 1\.\.128/],
       ['no data member', await mk(base), /no data members/],
     ];
     let bad: string[] = [];

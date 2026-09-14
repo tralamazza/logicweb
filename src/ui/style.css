@@ -34,7 +34,7 @@
   --toolbar-h: 31px;   /* content device y 66..125, border 126..127 */
   --axis-h: 30px;      /* content device y 128..185, border 186..187 */
   --status-h: 40px;    /* border device y 1920..1921, content 1922..1999 */
-  --labels-w: 105px;   /* strip 0..9, bg 10..207, border 208..209 */
+  --labels-w: 170px;   /* [CHOICE] room for per-channel Trigger Enabled badge */
   --rail-w: 47px;      /* border device x 3106..3107, content 3108..3199 */
   --strip-w: 5px;      /* device x 0..9 */
   --panel-w: 296px;
@@ -160,6 +160,49 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .ch-name:hover { border-color: var(--border-low); }
 .ch-name:focus { outline: none; border-color: var(--accent); background: var(--bg00); }
+.ch-trigger {
+  flex: none;
+  width: 30px;
+  height: 18px;
+  padding: 0 2px;
+  border: 1px solid var(--border-low);
+  border-radius: 3px;
+  background: var(--bg20);
+  color: var(--text50);
+  font-size: 10px;
+  line-height: 16px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.ch-trigger:hover { border-color: var(--accent); color: var(--text80); }
+.ch-trigger svg { display: block; width: 24px; height: 16px; }
+.ch-trigger.active {
+  width: 30px;
+  min-width: 30px;
+  padding: 0 2px;
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent);
+  font-size: 9px;
+}
+.ch-trigger.masked { opacity: .45; }
+.ch-trigger.active.triggered { background: #2f9e64; border-color: #2f9e64; }
+.ch-trigger.active.not-found { background: var(--negative); border-color: var(--negative); }
+.trigger-inline-picker {
+  position: fixed; z-index: 40; display: flex; gap: 3px; padding: 3px;
+  transform: translate(22px, -50%) scaleX(0); transform-origin: left center;
+  opacity: 0; pointer-events: none; transition: transform 140ms ease, opacity 100ms ease;
+  background: var(--bg20); border: 1px solid var(--border-high); border-radius: 4px;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 40%);
+}
+.trigger-inline-picker.open { transform: translate(22px, -50%) scaleX(1); opacity: 1; pointer-events: auto; }
+.trigger-inline-option {
+  width: 30px; height: 25px; padding: 2px; display: grid; place-items: center;
+  color: var(--text50); background: var(--bg10); border: 1px solid var(--border-low);
+  border-radius: 3px; cursor: pointer;
+}
+.trigger-inline-option:hover, .trigger-inline-option.selected { color: var(--text); border-color: var(--accent); background: var(--accent); }
+.trigger-inline-option svg { width: 24px; height: 16px; }
 
 .ch-analyzer {
   display: flex;
@@ -261,6 +304,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-weight: 600; color: var(--text);
 }
 .panel-section-head span:first-child { flex: 1; }
+.panel-section-head > input[type="checkbox"] { margin-left: auto; width: 15px; height: 15px; accent-color: var(--accent); }
 .panel-section-body { display: flex; flex-direction: column; gap: 8px; }
 .panel-note { font-size: 10px; color: var(--text50); line-height: 1.5; white-space: pre-wrap; }
 .panel-note.error { color: var(--negative); }
@@ -280,12 +324,34 @@ button:disabled { opacity: 0.45; cursor: default; }
   border: 1px solid var(--border-low); border-radius: 3px;
   padding: 4px 6px; font: inherit; width: 100%;
 }
+.panel-section-head .field input[type="checkbox"] { width: auto; align-self: flex-start; }
 
 .segmented { display: flex; }
 .seg { flex: 1; border-radius: 0; }
 .seg:first-child { border-radius: 3px 0 0 3px; }
 .seg:last-child { border-radius: 0 3px 3px 0; }
 .seg.on { background: var(--text80); color: var(--bg00); }
+
+
+.advanced { border-bottom: 1px solid var(--border-low); }
+.advanced summary {
+  padding: 10px 12px; color: var(--text); font-weight: 600; cursor: pointer;
+  user-select: none;
+}
+.advanced-body { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; }
+.advanced-console-label { font-size: 10px; color: var(--text50); }
+.usb-console-output {
+  height: 132px; margin: 0; padding: 6px; overflow: auto;
+  background: var(--bg00); color: #b8e994; border: 1px solid var(--border-low);
+  border-radius: 3px; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.usb-console-command { display: flex; gap: 5px; }
+.usb-console-command input {
+  flex: 1; min-width: 0; padding: 4px 6px; background: var(--bg10); color: var(--text80);
+  border: 1px solid var(--border-low); border-radius: 3px;
+  font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 
 .analyzer-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .analyzer-name { min-width: 54px; }

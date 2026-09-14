@@ -3,22 +3,24 @@
 /**
  * The time axis: which ticks, where, and what they are called.
  *
- * [CHOSEN] . Minor spacing is the smallest power of ten that keeps ticks
- * at least `minimumHorizontalTickSpacingPx = 45` apart; major spacing is exactly 10x the
- * minor. Major ticks draw a line from half the axis height downward, minor ticks a short
- * line in the bottom 3 px, and when the nearest major is off-screen to the left a major is
- * pinned at x=0 and marked with a 4x6 px left-pointing arrow.
+ * Minor spacing normally uses the smallest power of ten that keeps ticks at least
+ * `minimumHorizontalTickSpacingPx = 45` apart. At high zoom, once individual samples
+ * have that much room, ticks instead follow the exact sampling period. This preserves
+ * 5 ns at 200 MS/s, 2.5 ns at 400 MS/s and 833 ps at 1.2 GS/s instead of rounding all
+ * of them up to the next decimal decade. Major spacing is exactly ten minor ticks.
  *
  * [MEASURED] on 01-idle-empty-session.png: minor ticks 46.3 CSS px apart, majors at
  * 0/10/20/30 ms with 1 ms minors, minor tick marks in the bottom 3.5 CSS px, major tick
  * lines starting halfway down. The screenshot and the source agree, so both are used.
  *
- * Tick positions are integer multiples of a power of ten held in **picoseconds**, never in
- * floating-point seconds. That is what makes the labels exact - see format.ts.
+ * Decimal tick positions use integer picoseconds. Sampling ticks are derived from an
+ * integer sample index so repeating periods such as 1e12/1.2e9 ps do not accumulate
+ * incremental floating-point drift.
  */
 
 import { AXIS, COLORS, GRID } from './metrics.js';
 import { majorLabel, minorLabel } from './format.js';
+import { MIN_SAMPLES_ON_SCREEN } from '../render/transform.js';
 
 export interface Tick {
   /** Time in picoseconds from t0. */
@@ -42,13 +44,29 @@ export interface TickSet {
  * @param startPs  time at the left edge of the plot
  * @param endPs    time at the right edge
  * @param widthCss plot width in CSS px
+ * @param samplerateHz capture sampling rate; enables sample-aligned high-zoom ticks
  */
-export function computeTicks(startPs: number, endPs: number, widthCss: number): TickSet {
+export function computeTicks(
+  startPs: number,
+  endPs: number,
+  widthCss: number,
+  samplerateHz?: number,
+): TickSet {
   if (!(endPs > startPs) || !(widthCss > 0)) {
     return { minorPs: 1, majorPs: 10, ticks: [], pinned: null };
   }
   const spanPs = endPs - startPs;
   const pxPerPs = widthCss / spanPs;
+
+  const samplePeriodPs = samplerateHz !== undefined && samplerateHz > 0
+    ? 1e12 / samplerateHz : Infinity;
+  const samplesVisible = spanPs / samplePeriodPs;
+  if (Number.isFinite(samplePeriodPs) && (
+    samplePeriodPs * pxPerPs >= AXIS.minTickSpacing ||
+    samplesVisible <= MIN_SAMPLES_ON_SCREEN * (1 + 1e-9)
+  )) {
+    return computeSampleTicks(startPs, endPs, pxPerPs, samplePeriodPs);
+  }
 
   // Smallest power of ten at least AXIS.minTickSpacing px wide. 1 ps is the floor: below
   // that there is nothing meaningful left to label.
@@ -71,7 +89,12 @@ export function computeTicks(startPs: number, endPs: number, widthCss: number): 
       ps: t,
       x,
       major: isMajor,
-      label: isMajor ? majorLabel(t, minorPs) : minorLabel(t - Math.floor(t / majorPs) * majorPs, minorPs),
+      // Relative minor labels work well to the right of t=0, but their modulo
+      // remainder turns a negative pre-trigger time (e.g. -20 ms) into +80 ms.
+      // Keep the sign visible on the left side of the trigger origin.
+      label: isMajor ? majorLabel(t, minorPs) : t < 0
+        ? majorLabel(t, minorPs)
+        : minorLabel(t - Math.floor(t / majorPs) * majorPs, minorPs),
     });
   }
 
@@ -84,6 +107,52 @@ export function computeTicks(startPs: number, endPs: number, widthCss: number): 
     pinned = { ps: prevMajor, x: 0, major: true, label: majorLabel(prevMajor, minorPs) };
   }
   return { minorPs, majorPs, ticks, pinned };
+}
+
+/** Sampling-period ticks, calculated from sample indices rather than repeated addition. */
+function computeSampleTicks(
+  startPs: number,
+  endPs: number,
+  pxPerPs: number,
+  periodPs: number,
+): TickSet {
+  const majorPs = periodPs * 10;
+  const ticks: Tick[] = [];
+  // The tolerance only prevents an exact sample boundary represented one ulp high from
+  // being skipped. It is far too small to admit the preceding sample.
+  const firstSample = Math.ceil(startPs / periodPs - 1e-10);
+  const lastSample = Math.ceil(endPs / periodPs - 1e-10);
+  const maxTicks = 4096;
+  for (let sample = firstSample; sample < lastSample && ticks.length < maxTicks; sample++) {
+    const exactPs = sample * periodPs;
+    const labelPs = Math.round(exactPs);
+    const major = ((sample % 10) + 10) % 10 === 0;
+    const withinMajor = ((sample % 10) + 10) % 10;
+    ticks.push({
+      ps: exactPs,
+      x: (exactPs - startPs) * pxPerPs,
+      major,
+      label: major
+        ? majorLabel(labelPs, Math.round(periodPs))
+        : exactPs < 0
+          ? majorLabel(labelPs, Math.round(periodPs))
+          : minorLabel(Math.round(withinMajor * periodPs), Math.round(periodPs)),
+    });
+  }
+
+  let pinned: Tick | null = null;
+  const firstMajorVisible = ticks.find((tick) => tick.major);
+  if (!firstMajorVisible || firstMajorVisible.x > 1) {
+    const sample = Math.floor(startPs / majorPs) * 10;
+    const exactPs = sample * periodPs;
+    pinned = {
+      ps: exactPs,
+      x: 0,
+      major: true,
+      label: majorLabel(Math.round(exactPs), Math.round(periodPs)),
+    };
+  }
+  return { minorPs: periodPs, majorPs, ticks, pinned };
 }
 
 /**

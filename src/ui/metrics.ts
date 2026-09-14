@@ -55,8 +55,8 @@ export const CHROME = {
   axisHeight: 29,
   /** device y 1922..1999 */
   statusHeight: 39,
-  /** device x 0..211 including the 2 device px border at 208 */
-  labelColWidth: 106,
+  /** [CHOICE] widened for the per-channel Trigger Enabled control. */
+  labelColWidth: 170,
   /** device x 0..9, filled with the channel colour */
   colorStripWidth: 5,
   /** device x 3106..3199 including its 2 device px left border */
