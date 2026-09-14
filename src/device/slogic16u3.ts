@@ -528,6 +528,9 @@ export class Slogic16U3 implements Device {
   ) => void) | null = null;
   private triggerMatched = false;
   private triggerNotFound = false;
+  /** Reported once when the capture delivered everything it was ever going to. */
+  private onCaptureEnd: (() => void) | null = null;
+  private captureEnded = false;
   private sampleCarry = new Uint8Array(0);
   /** Set by StartOptions.discard: count bytes, never hand them to a sink. */
   private discard = false;
@@ -649,13 +652,23 @@ export class Slogic16U3 implements Device {
     return Math.max(this.lastCompletionAt, this.stoppingSince) + STOP_TIMEOUT_MS;
   }
 
+  /** Wire bytes per device sample: below 8 channels the firmware packs 8/channels
+   * samples into one byte, so this is fractional (0.5 at 4 channels). */
+  private wireBytesPerSample(channels: number): number {
+    return channels < 8 ? channels / 8 : bytesPerSampleForChannels(channels);
+  }
+
   /** Device samples this transport has received since RUN, the dropped head included. */
   private receivedDeviceSamples(): number {
-    const bps = bytesPerSampleForChannels(this.cfg?.channels ?? 32);
     // The head is dropped inside deliver(), which the discard path never reaches, so
-    // count it back either way and compare in the device's own units.
+    // count it back either way and compare in the device's own units. The head bytes
+    // are *wire* bytes: at 4 channels the 4 dropped bytes are 8 device samples, and
+    // dividing by the stored bytes-per-sample here would leave this counter short of
+    // the armed limit forever - no flush, no onEnd, and stop() misses the
+    // self-stopped fast path.
+    const wire = this.wireBytesPerSample(this.cfg?.channels ?? 32);
     const headReceived = this.discard ? HEAD_DROP_BYTES : HEAD_DROP_BYTES - this.headRemaining;
-    return this.samplesDelivered + headReceived / bps;
+    return this.samplesDelivered + headReceived / wire;
   }
 
   /**
@@ -944,13 +957,45 @@ export class Slogic16U3 implements Device {
     this.triggerNotFound = false;
     this.discard = opts.discard ?? false;
     this.triggerState = opts.onTriggerState ?? null;
+    this.onCaptureEnd = opts.onEnd ?? null;
+    this.captureEnded = false;
+    // The two end-of-capture mechanisms count different units: `deviceSampleLimit`
+    // counts device samples, the trigger counts *emitted* samples. Combined, the
+    // comparison in deviceReachedItsLimit() is meaningless and can declare a still-
+    // producing device self-stopped, whose stop() path then cancels its reads - the
+    // FIFO-overrun wedge (NOTES 8.2). The capture length in trigger mode belongs in
+    // `softwareTrigger.maxSamples`.
+    if (opts.softwareTrigger && opts.deviceSampleLimit && opts.deviceSampleLimit > 0) {
+      throw new Error('softwareTrigger and deviceSampleLimit are mutually exclusive; ' +
+        'bound a triggered capture with softwareTrigger.maxSamples');
+    }
+    // Every byte the coalescing buffer flushes - the end-of-capture tail included -
+    // must end on a sample boundary; the derived default (8 MiB) always does.
+    if (this.tuning.coalesceBytes !== undefined &&
+        this.tuning.coalesceBytes % bytesPerSampleForChannels(cfg.channels) !== 0) {
+      throw new Error(`coalesceBytes ${this.tuning.coalesceBytes} is not a multiple of ` +
+        `the ${bytesPerSampleForChannels(cfg.channels)}-byte sample size`);
+    }
     if (opts.softwareTrigger) {
       if (opts.softwareTrigger.channels !== cfg.channels) {
         throw new Error(`software trigger width ${opts.softwareTrigger.channels} does not match capture width ${cfg.channels}`);
       }
       this.trigger = new SoftwareTrigger({
         config: opts.softwareTrigger,
-        emit: (chunk) => this.emitSamples(chunk),
+        // The sink owns whatever it is handed (types.ts) - the worker pump *transfers*
+        // the chunk's ArrayBuffer to the page. The trigger, however, keeps reading the
+        // transfer buffer it emitted a view of: after the trigger sample is emitted,
+        // feed() goes on to emit the post-trigger range of the same buffer. Hand the
+        // sink a copy unless the chunk already owns its whole buffer (the ring slices
+        // do), or the rest of the fragment is read from a detached buffer and every
+        // sample after the trigger in that fragment is silently dropped.
+        emit: (chunk) => {
+          void this.emitSamples(
+            chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength
+              ? chunk
+              : chunk.slice(),
+          );
+        },
       });
       this.triggerState?.('waiting');
     } else {
@@ -1327,13 +1372,15 @@ export class Slogic16U3 implements Device {
       const sinkStarted = performance.now();
       if (this.discard) {
         // Bench mode: the pipe is drained as fast as the host can, and the cost of
-        // everything the sink would have done is removed from the measurement.
-        this.samplesDelivered += data.byteLength / bytesPerSampleForChannels(this.cfg!.channels);
+        // everything the sink would have done is removed from the measurement. These
+        // are wire bytes, so the sub-8-channel packing divisor applies.
+        this.samplesDelivered += data.byteLength / this.wireBytesPerSample(this.cfg!.channels);
       } else {
         // Awaiting the sink is the backpressure: a worker pump hands each chunk to the
         // page and waits for the ack, so `completed` grows at most to lagChunks before
         // canArm() stops the refill above (see the refill rules).
         await this.deliver(data);
+        await this.maybeEndCapture();
       }
       this.sinkMs.push(performance.now() - sinkStarted);
       // A WebUSB short packet is successful data, not evidence that the unfilled part of
@@ -1493,6 +1540,41 @@ export class Slogic16U3 implements Device {
     return this.sink?.(block) ?? undefined;
   }
 
+  /**
+   * End-of-capture, detected on the delivery path rather than left to the caller.
+   *
+   * Two captures know when they are done: one whose device stops itself at
+   * R32_SAMPLE_LEN, and one whose software trigger has emitted its full budget. In
+   * both, the bytes already delivered are all the bytes there will ever be - but up
+   * to one coalescing block of them (SINK_CHUNK_BYTES, ~10 ms of 32ch/200M) is still
+   * sitting in `sinkBuffer`, and nothing else would flush it until stop(). A caller
+   * counting samples to decide when to stop therefore sat forever a few milliseconds
+   * short of its target ("stuck at 990 ms of a 1 s capture"). Flush the tail, then
+   * say so once through onEnd.
+   */
+  private async maybeEndCapture(): Promise<void> {
+    if (this.captureEnded) return;
+    // A manual stop's drain must not read as the capture ending on its own: the
+    // finally-block flush already delivers the tail, and "stopped by the user" and
+    // "delivered everything" are different reports.
+    if (this.stopping) return;
+    const trigger = this.trigger;
+    const triggerDone = trigger !== null &&
+      (trigger.stats.complete || trigger.stats.noTrigger);
+    if (!triggerDone && !this.deviceReachedItsLimit()) return;
+    this.captureEnded = true;
+    await this.flushSink();
+    this.trace({
+      dir: 'info',
+      note: trigger?.stats.noTrigger
+        ? 'software trigger search ended without a match; nothing more will be delivered'
+        : triggerDone
+          ? 'software trigger delivered its full budget; capture complete'
+          : 'device delivered its programmed length; capture complete',
+    });
+    this.onCaptureEnd?.();
+  }
+
   private maybeFinishTrigger(): void {
     const trigger = this.trigger;
     if (!trigger) return;
@@ -1523,6 +1605,7 @@ export class Slogic16U3 implements Device {
       this.triggerState = null;
       this.triggerMatched = false;
       this.triggerNotFound = false;
+      this.onCaptureEnd = null;
       this.sampleCarry = new Uint8Array(0);
       if (this.bus) await this.bus.writeCtrl(CTRL_STOP);
       return;
@@ -1623,6 +1706,7 @@ export class Slogic16U3 implements Device {
       this.triggerState = null;
       this.triggerMatched = false;
       this.triggerNotFound = false;
+      this.onCaptureEnd = null;
       this.sampleCarry = new Uint8Array(0);
     }
 

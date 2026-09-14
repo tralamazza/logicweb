@@ -107,6 +107,9 @@ async function handle(message: ToWorker): Promise<void> {
             if (index === undefined) post({ kind: 'trigger', state });
             else post({ kind: 'trigger', state, index });
           },
+          // Posted after the last chunk's postMessage, so the page sees every sample of
+          // the capture before it learns the capture is over.
+          onEnd: () => post({ kind: 'ended' }),
         },
       );
       post({ kind: 'started' });
