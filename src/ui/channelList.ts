@@ -92,10 +92,12 @@ export class ChannelList {
       name.value = cell.channel.name;
       name.spellcheck = false;
       name.title = 'Rename';
+      name.placeholder = '···';
       // Committing on blur and on Enter, not on every keystroke: a re-render on each
-      // character would take the caret with it.
+      // character would take the caret with it. An empty name is valid: the D-tag is
+      // the identity, the name is optional.
       const commit = () => {
-        const v = name.value.trim() || `Channel ${cell.channel.index}`;
+        const v = name.value.trim();
         if (v !== cell.channel.name) this.cb.onRename(cell.channel.index, v);
       };
       name.addEventListener('blur', commit);
