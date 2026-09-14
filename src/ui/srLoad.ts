@@ -21,6 +21,7 @@
 
 import { createEdgeStore } from '../data/index.js';
 import type { SampleStore } from '../data/types.js';
+import { channelWidthForProbes } from '../types.js';
 import type { LoadedCapture } from './captureIO.js';
 
 const EOCD_SIG = 0x06054b50;
@@ -195,15 +196,15 @@ function parseMetadata(text: string): SrDevice {
   if (!dev || dev.capturefile === undefined) throw new Error('no logic capturefile in the metadata');
   const samplerate = dev.samplerate;
   if (!(samplerate !== undefined && samplerate > 0)) throw new Error('no samplerate in the metadata');
-  if (!(dev.probes >= 1 && dev.probes <= 16)) {
-    throw new Error(`total probes ${dev.probes} outside 1..16`);
+  if (!(dev.probes >= 1 && dev.probes <= 128)) {
+    throw new Error(`total probes ${dev.probes} outside 1..128`);
   }
   if (dev.analog > 0) throw new Error('analog channels in this capture are not supported');
-  if (dev.unitsize !== 1 && dev.unitsize !== 2) {
-    throw new Error(`unitsize ${dev.unitsize} is not 1 or 2`);
+  if (!Number.isInteger(dev.unitsize) || dev.unitsize < 1 || dev.unitsize > 16) {
+    throw new Error(`unitsize ${dev.unitsize} is outside 1..16 bytes`);
   }
-  if (dev.unitsize === 1 && dev.probes > 8) {
-    throw new Error(`unitsize 1 cannot carry ${dev.probes} probes`);
+  if (dev.unitsize < Math.ceil(dev.probes / 8)) {
+    throw new Error(`unitsize ${dev.unitsize} cannot carry ${dev.probes} probes`);
   }
   return {
     capturefile: dev.capturefile,
@@ -235,25 +236,20 @@ function samplesToChannels(
   if (length !== Math.floor(length)) {
     throw new Error(`data length ${data.length} is not a whole number of ${unitsize}-byte samples`);
   }
-  const initialAt = (c: number): number => {
-    let v = data[0]!;
-    if (unitsize === 2) v |= data[1]! << 8;
-    return (v >>> c) & 1;
-  };
+  const bitAt = (sample: number, c: number): number =>
+    (data[sample * unitsize + (c >>> 3)]! >>> (c & 7)) & 1;
   const out: Array<{ initial: 0 | 1; edges: Int32Array }> = [];
   for (let c = 0; c < probes; c++) {
     const edges: number[] = [];
-    let level = initialAt(c);
+    let level = bitAt(0, c);
     for (let i = 1; i < length; i++) {
-      let v = data[i * unitsize]!;
-      if (unitsize === 2) v |= data[i * unitsize + 1]! << 8;
-      const b = (v >>> c) & 1;
+      const b = bitAt(i, c);
       if (b !== level) {
         edges.push(i);
         level = b;
       }
     }
-    out.push({ initial: initialAt(c) as 0 | 1, edges: new Int32Array(edges) });
+    out.push({ initial: bitAt(0, c) as 0 | 1, edges: new Int32Array(edges) });
   }
   return out;
 }
@@ -299,9 +295,8 @@ export async function parseSr(buf: ArrayBuffer, source: string): Promise<LoadedC
 
   const channels = samplesToChannels(data, dev.unitsize, dev.probes);
   const length = data.length / dev.unitsize;
-  // The store packs 4, 8 or 16 channels; an .sr with fewer probes pads with empty
-  // transition lists, which cost nothing in the edge store.
-  const channelCount: 4 | 8 | 16 = dev.probes <= 4 ? 4 : dev.probes <= 8 ? 8 : 16;
+  // Pad to the next supported width; empty channels cost nothing in the edge store.
+  const channelCount = channelWidthForProbes(dev.probes);
   const padded = Array.from({ length: channelCount }, (_, c) =>
     channels[c] ?? { initial: 0 as const, edges: new Int32Array(0) });
   const store: SampleStore = createEdgeStore(channelCount, dev.samplerate, length, padded);

@@ -15,7 +15,7 @@
  * selected rate and a free-running capture stops itself there instead of dying mid-stream.
  */
 
-import { MAX_SAMPLERATE_HZ, SAMPLERATES_HZ, vrefCode, vrefVolts } from '../device/index.js';
+import { SAMPLERATES_HZ, vrefCode, vrefVolts } from '../device/index.js';
 import { formatDuration, formatRate } from './format.js';
 import { channelColor, type CaptureSettings, type ChannelState } from './state.js';
 import { MAX_SAMPLES } from './captureIO.js';
@@ -27,6 +27,7 @@ export interface CapturePanelCallbacks {
   onToggleChannel(index: number, enabled: boolean): void;
   onSetAllChannels(enabled: boolean): void;
   onConnect(): void;
+  onUsbControl(command: string): Promise<string>;
 }
 
 export interface CapturePanelView {
@@ -34,12 +35,20 @@ export interface CapturePanelView {
   channels: readonly ChannelState[];
   deviceName: string | null;
   running: boolean;
+  stopping: boolean;
   /** Non-null while a capture is streaming. */
   progress: { seconds: number; samples: number; bytes: number; lost: number } | null;
   webusbAvailable: boolean;
+  maxSamplerateHz: Readonly<Record<number, number>>;
+  triggerState: 'off' | 'waiting' | 'triggered' | 'not-found';
 }
 
 export class CapturePanel {
+  private advancedOpen = false;
+  private consoleLines: string[] = [
+    'Enter help for commands. Numbers are decimal or 0x-prefixed hex.',
+  ];
+
   constructor(
     private readonly root: HTMLElement,
     private readonly cb: CapturePanelCallbacks,
@@ -55,9 +64,9 @@ export class CapturePanel {
     head.appendChild(title);
     const sub = div('panel-sub');
     sub.textContent = v.deviceName
-      ? 'Sipeed SLogic16 U3 over WebUSB'
+      ? 'Sipeed SLogic U3 over WebUSB'
       : v.webusbAvailable
-        ? 'Click Connect and pick the SLogic16 U3. The grant is remembered for this origin.'
+        ? 'Click Connect and pick an SLogic16/32 U3. The grant is remembered for this origin.'
         : 'WebUSB is unavailable in this browser. Use Brave or Chrome over http://127.0.0.1.';
     head.appendChild(sub);
     const connect = button(v.deviceName ? 'Reconnect' : 'Connect device', 'pill');
@@ -93,7 +102,7 @@ export class CapturePanel {
 
     // ---- rate + threshold
     const rowRT = div('field-row');
-    const ceiling = MAX_SAMPLERATE_HZ[s.channels] ?? 200e6;
+    const ceiling = v.maxSamplerateHz[s.channels] ?? 200e6;
     const rate = select(
       SAMPLERATES_HZ.filter((r) => r <= ceiling).map((r) => [String(r), formatRate(r)]),
       String(s.samplerate),
@@ -150,6 +159,22 @@ export class CapturePanel {
       `${formatRate(s.samplerate)}. A free run stops itself there.`;
     modeSec.body.appendChild(limit);
 
+    const triggerSec = section('Software trigger');
+    const mask = document.createElement('input');
+    mask.type = 'checkbox'; mask.checked = s.triggerEnableMask; mask.disabled = v.running || v.stopping;
+    mask.title = 'Enable software trigger';
+    triggerSec.header.appendChild(mask);
+    mask.addEventListener('change', () => this.cb.onSettings({ ...s, triggerEnableMask: mask.checked }));
+    triggerSec.body.hidden = !s.triggerEnableMask;
+    if (s.triggerEnableMask) {
+      const pre = select([
+        ['0', 'No pre-trigger'], ['10', '10%'], ['25', '25%'], ['50', '50%'], ['75', '75%'],
+      ], String(s.preTriggerPercent));
+      pre.disabled = v.running || v.stopping;
+      pre.addEventListener('change', () => this.cb.onSettings({ ...s, preTriggerPercent: Number(pre.value) }));
+      triggerSec.body.appendChild(labelled('Pre-trigger buffer', pre));
+    }
+
     // No Start/Stop here on purpose: the toolbar transport is the only one, so there is
     // no second control that can disagree with it about whether a capture may start.
     if (v.progress) {
@@ -170,6 +195,80 @@ export class CapturePanel {
       }
     }
     this.root.appendChild(modeSec.el);
+    this.root.appendChild(triggerSec.el);
+
+    // ---- advanced test mode + raw USB console
+    const advanced = document.createElement('details');
+    advanced.className = 'advanced';
+    advanced.open = this.advancedOpen;
+    advanced.addEventListener('toggle', () => { this.advancedOpen = advanced.open; });
+    const summary = document.createElement('summary');
+    summary.textContent = 'Advanced';
+    advanced.appendChild(summary);
+    const body = div('advanced-body');
+
+    const source = select([
+      ['0', 'Normal'],
+      ['2', 'Simulator'],
+      ['1', 'USB MAX SPEED'],
+    ], String(s.testMode));
+    source.disabled = v.running;
+    source.addEventListener('change', () =>
+      this.cb.onSettings({ ...s, testMode: Number(source.value) as 0 | 1 | 2 }));
+    body.appendChild(labelled('Device test mode (next capture)', source));
+
+    const consoleLabel = document.createElement('label');
+    consoleLabel.className = 'advanced-console-label';
+    consoleLabel.textContent = 'USB control console';
+    const output = document.createElement('pre');
+    output.className = 'usb-console-output';
+    const renderOutput = (): void => {
+      output.textContent = this.consoleLines.join('\n');
+      output.scrollTop = output.scrollHeight;
+    };
+    renderOutput();
+    const commandRow = div('usb-console-command');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.spellcheck = false;
+    input.placeholder = 'read 0x000c 4';
+    input.disabled = !v.deviceName || v.running;
+    const send = button('Send', 'mini');
+    send.disabled = input.disabled;
+    const execute = async (): Promise<void> => {
+      const command = input.value.trim();
+      if (!command || send.disabled) return;
+      input.value = '';
+      input.disabled = true;
+      send.disabled = true;
+      this.consoleLines.push(`> ${command}`);
+      renderOutput();
+      try {
+        this.consoleLines.push(await this.cb.onUsbControl(command));
+      } catch (e) {
+        this.consoleLines.push(`error: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        this.consoleLines = this.consoleLines.slice(-80);
+        input.disabled = !v.deviceName || v.running;
+        send.disabled = input.disabled;
+        renderOutput();
+        input.focus();
+      }
+    };
+    send.addEventListener('click', () => void execute());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); void execute(); }
+    });
+    commandRow.append(input, send);
+    body.append(consoleLabel, output, commandRow);
+    const help = div('panel-note');
+    help.textContent =
+      'Commands: read <addr> [len], write <addr> <byte>..., ctrl <value>, ' +
+      'flags, clear-fifo, ' +
+      'in <request> <value> <index> <len>, out <request> <value> <index> [byte]...';
+    body.appendChild(help);
+    advanced.appendChild(body);
+    this.root.appendChild(advanced);
   }
 }
 

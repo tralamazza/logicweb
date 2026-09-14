@@ -37,7 +37,7 @@ import {
   parseHexColor,
   type Theme,
 } from './theme.js';
-import { ViewTransform } from './transform.js';
+import { MIN_SAMPLES_ON_SCREEN, ViewTransform } from './transform.js';
 
 export interface WaveformRendererOptions {
   canvas: HTMLCanvasElement;
@@ -413,9 +413,15 @@ export class WaveformRenderer {
       // The user's chosen time span is sacred in live mode: a capture that is 3 ms old
       // must not drag a 1 s window down to 3 ms. minVisibleFraction 0 turns off the
       // zoom-out clamp and leaves only "pin the right edge to the newest sample".
-      const span = this.view.span;
-      this.view.set(Math.max(0, length - span), Math.max(0, length - span) + span);
-      this.view.clampTo(length, { minVisibleFraction: 0 });
+      const span = Math.min(this.view.span, length);
+      // During startup the capture is shorter than the requested live window. Use the
+      // actual data length so the newest sample is still at the right edge; once the
+      // capture grows beyond that window, preserve the user's chosen span and scroll it.
+      this.view.set(Math.max(0, length - span), length);
+      this.view.clampTo(length, {
+        minVisibleFraction: 0,
+        minSpan: Math.min(MIN_SAMPLES_ON_SCREEN, length),
+      });
     }
 
     if (this.layoutDirty) this.rebuildLayout();

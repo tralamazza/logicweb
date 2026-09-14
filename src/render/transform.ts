@@ -14,8 +14,12 @@
  * 100 px steps.
  */
 
-/** [CHOSEN] Zoom-in clamps at 20 samples across the full width. */
-export const MIN_SAMPLES_ON_SCREEN = 20;
+/**
+ * Maximum zoom keeps ten samples across the full width. At ordinary plot widths this
+ * leaves enough room to label every sample period, including non-decimal periods such
+ * as 2.5 ns at 400 MS/s and 833 ps at 1.2 GS/s.
+ */
+export const MIN_SAMPLES_ON_SCREEN = 10;
 
 export interface ViewportRange {
   /** First visible sample position, may be fractional and may be < 0. */
@@ -89,7 +93,7 @@ export class ViewTransform {
   /**
    * Keep the view inside something sensible for a capture of `length` samples.
    *
-   * - span is clamped below at MIN_SAMPLES_ON_SCREEN [SOURCE].
+   * - span is clamped below at MIN_SAMPLES_ON_SCREEN.
    * - span is clamped above so that at least `minVisibleFraction` of the screen can be
    *   covered by data. Zooming out PAST the end of the capture is deliberately allowed:
    *   the empty part renders as NO_DATA, which is the honest picture, and it is the
@@ -103,7 +107,7 @@ export class ViewTransform {
    * has to survive a capture that is currently 3 ms long.
    *
    * [UNVERIFIED] How far past the end of a capture panning and zooming may go. The
-   * zoom-IN clamp is known exactly (20 samples); its zoom-OUT limit is not in the spec.
+   * zoom-IN clamp is ten samples; its zoom-OUT limit is not in the spec.
    */
   clampTo(
     length: number,

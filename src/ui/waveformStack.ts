@@ -19,11 +19,8 @@
  *   - the viewport is applied to renderer 0 first, read back after its own clamp, and
  *     then pushed to the rest, so no canvas can be a frame ahead of another.
  *
- * A live capture never splits: annotations are cleared when a capture starts, so there
- * are no lanes and the row count is the channel count, at most 16. That matters because
- * in follow-the-live-edge mode each renderer snapshots `store.length` for itself, and two
- * canvases snapshotting a frame apart would put a horizontal step across the screen at
- * the live edge.
+ * Wider captures also split at 16 rows. Each frame computes one viewport first and then
+ * applies it to every renderer, so all canvases share the same sample window.
  */
 
 import { ViewTransform, WaveformRenderer } from '../render/index.js';

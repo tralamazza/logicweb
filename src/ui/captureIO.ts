@@ -18,6 +18,7 @@
 
 import { channelAcrossGaps, createEdgeStore } from '../data/index.js';
 import type { GapSpan, SampleStore } from '../data/types.js';
+import { isChannelCount, type ChannelCount } from '../types.js';
 import { parseSr } from './srLoad.js';
 
 /** [src/data] `append` throws past 2^31 samples rather than wrapping. */
@@ -116,7 +117,7 @@ export function loadLwcap(buf: ArrayBuffer, source: string): LoadedCapture {
     throw new Error(`not a .lwcap file (magic ${JSON.stringify(magic)})`);
   }
   const n = dv.getUint32(8, true);
-  if (n !== 4 && n !== 8 && n !== 16) throw new Error(`channelCount ${n} is not 4, 8 or 16`);
+  if (!isChannelCount(n)) throw new Error(`channelCount ${n} is not a supported width (4/8/16/32/64/128)`);
   const gapCount = dv.getUint32(12, true);
   const samplerate = dv.getFloat64(16, true);
   const length = dv.getFloat64(24, true);
@@ -161,7 +162,7 @@ export function loadLwcap(buf: ArrayBuffer, source: string): LoadedCapture {
 
   // The file already IS the edge store's representation: load straight into it, no
   // sample-space expansion.
-  const store = createEdgeStore(n as 4 | 8 | 16, samplerate, length,
+  const store = createEdgeStore(n as ChannelCount, samplerate, length,
     Array.from({ length: n }, (_, c) => ({ initial: initials[c]! as 0 | 1, edges: edges[c]! })),
     gaps);
   return {

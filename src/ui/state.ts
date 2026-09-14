@@ -9,6 +9,7 @@
 
 import type { AnnotationIndex, DecodeResult } from '../decode/index.js';
 import { ANALYZER_COLORS, CHANNEL_COLORS } from './metrics.js';
+import type { ChannelCount } from '../types.js';
 
 export interface ChannelState {
   /** Capture channel index, i.e. D<index>. Never changes; display order does. */
@@ -37,13 +38,35 @@ export interface AnalyzerState {
 }
 
 export interface CaptureSettings {
-  channels: 4 | 8 | 16;
+  channels: ChannelCount;
   samplerate: number;
   thresholdVolts: number;
   /** 'free' runs until stopped or until the sample ceiling; 'timer' stops after seconds. */
   mode: 'free' | 'timer';
   seconds: number;
+  /** Hardware data source: normal pins, USB maximum-speed pattern, or simulator. */
+  testMode: 0 | 1 | 2;
+  /** Global trigger enable mask. Per-channel modes remain stored when this is false. */
+  triggerEnableMask: boolean;
+  softwareTrigger: boolean;
+  /** One of the five PulseView-style per-channel trigger glyphs. Missing means X. */
+  triggerModes: Record<number, TriggerMode>;
+  /** Confirmed per-channel conditions. They are combined with logical AND. */
+  triggerConditions: TriggerCondition[];
+  /** Legacy single-condition fields kept for saved/debug settings compatibility. */
+  triggerChannel: number;
+  triggerKind: 'level' | 'rising' | 'falling' | 'edge';
+  triggerLevel: 0 | 1;
+  preTriggerPercent: number;
 }
+
+export interface TriggerCondition {
+  channel: number;
+  kind: CaptureSettings['triggerKind'];
+  level: 0 | 1;
+}
+
+export type TriggerMode = 'low' | 'high' | 'rising' | 'falling' | 'dont-care';
 
 export type Source = 'none' | 'file' | 'device';
 
