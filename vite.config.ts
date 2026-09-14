@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Daniel Tralamazza
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -58,6 +58,87 @@ function emitLicense(): Plugin {
         fileName: 'LICENSE.txt',
         source: readFileSync(resolve(__dirname, 'LICENSE'), 'utf8'),
       });
+      this.emitFile({
+        type: 'asset',
+        fileName: 'THIRD_PARTY_LICENSES.txt',
+        source:
+          'Pyodide\n=======\n\n' +
+          readFileSync(resolve(__dirname, 'public/pyodide/LICENSE-pyodide-MPL-2.0.txt'), 'utf8') +
+          '\n\nCPython embedded by Pyodide\n===========================\n\n' +
+          readFileSync(resolve(__dirname, 'public/pyodide/LICENSE-cpython-PSF.txt'), 'utf8'),
+      });
+      this.emitFile({
+        type: 'asset',
+        fileName: 'DEPLOY.txt',
+        source:
+          'logicweb static distribution\n\n' +
+          'index.html contains the UI, Decode Worker, Pyodide WASM/stdlib and sigrok decoders.\n' +
+          'Double-click it for capture, WebUSB, protocol decoding and the Advanced USB console.\n' +
+          'Node, npm and a local HTTP server are not runtime dependencies.\n' +
+          'It can also be served unchanged from any static HTTPS host.\n' +
+          'JavaScript source maps are included for browser debugging. Advanced contains the USB console.\n',
+      });
+    },
+  };
+}
+
+/**
+ * Keep normal hashed assets/source maps, but also inline the entry JS and CSS into
+ * dist/index.html. The portable build also bundles the decode worker and all of its
+ * runtime data, so the result does not perform a neighbouring file:// import or fetch.
+ */
+function inlineEntryForFileOpen(): Plugin {
+  return {
+    name: 'logicweb:inline-entry-for-file-open',
+    apply: 'build',
+    enforce: 'post',
+    closeBundle() {
+      const out = resolve(__dirname, 'dist');
+      const indexPath = resolve(out, 'index.html');
+      let html = readFileSync(indexPath, 'utf8');
+      html = html.replace(
+        /<script\s+type="module"[^>]*\ssrc="([^"]+)"[^>]*><\/script>/,
+        (_tag, src: string) => {
+          const rel = src.replace(/^\.\//, '').replace(/^\//, '');
+          let code = readFileSync(resolve(out, rel), 'utf8');
+          const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/') + 1) : '';
+          // Both the entry and the inline worker carry source map comments. Put the
+          // maps in data URLs so moving index.html alone keeps TypeScript debugging.
+          code = code.replace(
+            /\/\/# sourceMappingURL=([A-Za-z0-9_./-]+\.map)/g,
+            (_comment, map: string) => {
+              const mapPath = resolve(
+                out, dir, map.replace(/^\.\//, '').replace(/^\//, ''));
+              return `//# sourceMappingURL=data:application/json;base64,${
+                readFileSync(mapPath).toString('base64')}`;
+            },
+          );
+          code = code.replace(/<\/script/gi, '<\\/script');
+          return `<script type="module">\n${code}\n</script>`;
+        },
+      );
+      html = html.replace(
+        /<link\s+rel="stylesheet"[^>]*\shref="([^"]+)"[^>]*>/,
+        (_tag, href: string) => {
+          const rel = href.replace(/^\.\//, '').replace(/^\//, '');
+          return `<style>\n${readFileSync(resolve(out, rel), 'utf8')}\n</style>`;
+        },
+      );
+      html = html.replace(
+        /<link\s+rel="icon"[^>]*>/,
+        `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,${
+          readFileSync(resolve(out, 'favicon.svg')).toString('base64')}">`,
+      );
+      writeFileSync(indexPath, html);
+
+      if (portable) {
+        // All executable/runtime files and source maps are now represented inside
+        // index.html. Leave only documentation/licences beside the portable app.
+        for (const rel of ['assets', 'pyodide', 'decoders', 'favicon.svg', '.nojekyll']) {
+          const generated = resolve(out, rel);
+          if (existsSync(generated)) rmSync(generated, { recursive: true });
+        }
+      }
     },
   };
 }
@@ -74,21 +155,44 @@ const BANNER =
   ' * Source: https://github.com/tralamazza/logicweb\n' +
   ' */';
 
+const portable = process.env.LOGICWEB_PORTABLE === '1';
+const portableAssets = portable ? {
+  pyodideMjs: readFileSync(resolve(__dirname, 'public/pyodide/pyodide.mjs')).toString('base64'),
+  pyodideAsmMjs: readFileSync(resolve(__dirname, 'public/pyodide/pyodide.asm.mjs')).toString('base64'),
+  pyodideWasm: readFileSync(resolve(__dirname, 'public/pyodide/pyodide.asm.wasm')).toString('base64'),
+  stdlibZip: readFileSync(resolve(__dirname, 'public/pyodide/python_stdlib.zip')).toString('base64'),
+  lockJson: readFileSync(resolve(__dirname, 'public/pyodide/pyodide-lock.json')).toString('base64'),
+  decodersZip: readFileSync(resolve(__dirname, 'public/decoders/decoders.zip')).toString('base64'),
+} : null;
+
 export default defineConfig({
+  // Asset URLs remain portable when dist/ is hosted below a path. The entry itself is
+  // inlined after build so it also works from file://.
+  base: './',
   server: { host: '127.0.0.1', port: 5173 },
 
+  define: {
+    __LOGICWEB_PORTABLE_ASSETS__: JSON.stringify(portableAssets),
+  },
+
   /*
-   * The decode worker is an ES module: it imports the Pyodide loader and the
-   * decoder registry. Vite's default worker format is 'iife', which cannot use
-   * import at all, so without this the worker fails at parse time in the
-   * production build while still working in dev - the worst shape of bug.
+   * Bundle the inline decode worker as one classic script. A file:// document's
+   * opaque origin cannot start a module Blob worker in Chromium; a classic Blob
+   * worker can. Vite folds the worker's static TypeScript imports into this IIFE,
+   * while Pyodide's run-time blob modules continue to use dynamic import().
    */
   worker: {
-    format: 'es',
+    format: 'iife',
     rollupOptions: { output: { banner: BANNER } },
   },
 
-  build: { rollupOptions: { output: { banner: BANNER } } },
+  build: {
+    // Keep production minification while making the exact TypeScript sources available
+    // in DevTools when diagnosing USB/decoder issues on a user's machine.
+    sourcemap: true,
+    chunkSizeWarningLimit: portable ? 20_000 : 500,
+    rollupOptions: { output: { banner: BANNER } },
+  },
 
-  plugins: [requireRuntimeAssets(), emitLicense()],
+  plugins: [requireRuntimeAssets(), emitLicense(), inlineEntryForFileOpen()],
 });

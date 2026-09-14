@@ -34,6 +34,67 @@ interface PyodideAPI {
   setInterruptBuffer(buf: Uint8Array): void;
 }
 
+interface PortableAssets {
+  pyodideMjs: string;
+  pyodideAsmMjs: string;
+  pyodideWasm: string;
+  stdlibZip: string;
+  lockJson: string;
+  decodersZip: string;
+}
+
+/** Injected by Vite only for `npm run dist`; null keeps dev-server reloads small. */
+declare const __LOGICWEB_PORTABLE_ASSETS__: PortableAssets | null;
+
+function decodeBase64(value: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(value);
+  const result = new Uint8Array(binary.length);
+  for (let offset = 0; offset < binary.length; offset += 0x8000) {
+    const end = Math.min(offset + 0x8000, binary.length);
+    for (let i = offset; i < end; i++) result[i] = binary.charCodeAt(i);
+  }
+  return result;
+}
+
+function decodeBase64Text(value: string): string {
+  return new TextDecoder().decode(decodeBase64(value));
+}
+
+type CreatePyodideModule = (settings: unknown) => Promise<unknown>;
+
+function evaluatePyodideLoader(source: string): {
+  loadPyodide: (options: Record<string, unknown>) => Promise<unknown>;
+} {
+  const marker = 'export{dt as loadPyodide,U as version};';
+  if (!source.includes(marker)) {
+    throw new Error('Pyodide loader export no longer matches this Pyodide version');
+  }
+  // file:// pages cannot start a module Blob worker, and a classic worker cannot
+  // dynamically import a Blob module in Chromium. These generated Pyodide files
+  // have no static imports, so exposing their final exports from Function is enough.
+  const classic = source
+    .replaceAll('import.meta.url', 'self.location.href')
+    // This build supplies createPyodideModule and never uses Pyodide's dynamic
+    // import path. The guard only rejects classic workers because that path needs
+    // dynamic import(); our fully embedded classic worker is safe to use.
+    .replace(/if\(r&&\w+\(\)\)throw new Error\("Classic web workers are not supported"\);/, '')
+    .replace(marker, 'return {loadPyodide:dt,version:U};');
+  return new Function(classic)() as {
+    loadPyodide: (options: Record<string, unknown>) => Promise<unknown>;
+  };
+}
+
+function evaluatePyodideModule(source: string): CreatePyodideModule {
+  const marker = 'export default _createPyodideModule;';
+  if (!source.includes(marker)) {
+    throw new Error('Pyodide wasm module export no longer matches this Pyodide version');
+  }
+  const classic = source
+    .replaceAll('import.meta.url', 'self.location.href')
+    .replace(marker, 'return _createPyodideModule;');
+  return new Function(classic)() as CreatePyodideModule;
+}
+
 /**
  * Cooperative cancellation.
  *
@@ -88,47 +149,95 @@ async function getPyodide(): Promise<PyodideAPI> {
 
   loading = (async () => {
     const t0 = performance.now();
-    // Loading Pyodide is the one genuinely awkward part of the packaging, so
-    // it is worth stating why it looks like this.
-    //
-    //   * Bundling pyodide's ESM entry makes Vite code-split the worker, and
-    //     its default worker.format of 'iife' cannot code-split. worker.format
-    //     lives in a root vite.config.ts, which this module does not own.
-    //   * A classic worker fixes the production build but breaks `vite` dev,
-    //     which serves classic workers unbundled, import statements and all.
-    //   * A plain dynamic import of /pyodide/pyodide.mjs works in production
-    //     but 500s in dev, because the dev server appends ?import to it.
-    //
-    // Fetching the module text and importing it from a blob URL sidesteps all
-    // three: Vite has no static edge to follow and never rewrites a blob: URL.
-    // Pyodide locates its own siblings as `${indexURL}pyodide.asm.mjs`, an
-    // absolute URL, so loading the entry from a blob is safe as long as
-    // indexURL is passed - which it is.
+    // Keep one startup implementation for both distributions: dev fetches the
+    // staged Pyodide text/bytes, while the portable build reads identical data
+    // injected into the worker. Both evaluate the generated import-free modules
+    // inside this classic worker; see evaluatePyodideLoader() for why.
+    const portable = __LOGICWEB_PORTABLE_ASSETS__;
     const entryURL = config.pyodideIndexURL + 'pyodide.mjs';
-    const entryRes = await fetch(entryURL);
-    if (!entryRes.ok) {
-      throw new Error(
-        `fetching ${entryURL} failed: ${entryRes.status} ${entryRes.statusText} - ` +
-        `run: node src/decode/tools/vendor-assets.mjs <libsigrokdecode/decoders>`);
+    let entrySource: string;
+    if (portable) {
+      entrySource = decodeBase64Text(portable.pyodideMjs);
+      // Pyodide 0.28/314's public loader always installs its own URL-fetching
+      // instantiateWasm callback. Give the portable build an override point so the
+      // embedded bytes can be instantiated directly. Keep this deliberately narrow
+      // and fail loudly if an upgraded Pyodide changes the generated loader.
+      const needle = 'instantiateWasm:Ie(e.indexURL)';
+      if (!entrySource.includes(needle)) {
+        throw new Error('portable Pyodide loader patch no longer matches this Pyodide version');
+      }
+      entrySource = entrySource.replace(
+        needle, 'instantiateWasm:e.instantiateWasm??Ie(e.indexURL)');
+    } else {
+      const entryRes = await fetch(entryURL);
+      if (!entryRes.ok) {
+        throw new Error(
+          `fetching ${entryURL} failed: ${entryRes.status} ${entryRes.statusText} - ` +
+          `run: node src/decode/tools/vendor-assets.mjs <libsigrokdecode/decoders>`);
+      }
+      entrySource = await entryRes.text();
     }
-    const blobURL = URL.createObjectURL(
-      new Blob([await entryRes.text()], { type: 'text/javascript' }));
-    let loadPyodide: (o: { indexURL: string }) => Promise<unknown>;
-    try {
-      ({ loadPyodide } = await import(/* @vite-ignore */ blobURL));
-    } finally {
-      URL.revokeObjectURL(blobURL);
-    }
+
+    const { loadPyodide } = evaluatePyodideLoader(entrySource);
     if (typeof loadPyodide !== 'function') {
       throw new Error(`${entryURL} did not export loadPyodide`);
     }
-    const py = await loadPyodide({ indexURL: config.pyodideIndexURL }) as PyodideAPI;
 
-    const res = await fetch(config.decodersURL);
-    if (!res.ok) {
-      throw new Error(`fetching ${config.decodersURL} failed: ${res.status} ${res.statusText}`);
+    let py: PyodideAPI;
+    let zip: Uint8Array;
+    if (portable) {
+      const stdlibURL = URL.createObjectURL(new Blob(
+        [decodeBase64(portable.stdlibZip)], { type: 'application/zip' }));
+      try {
+        const createPyodideModule = evaluatePyodideModule(
+          decodeBase64Text(portable.pyodideAsmMjs));
+        const wasm = decodeBase64(portable.pyodideWasm);
+        const instantiateWasm = (
+          imports: WebAssembly.Imports,
+          receive: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void,
+        ) => {
+          // Pyodide installs two JavaScript imports immediately before its normal
+          // instantiate callback runs. Await the same initializer here; otherwise
+          // the module boots far enough to fail later at API.eval_code.
+          void (async () => {
+            // Same tiny helper module used by Pyodide's getJsvErrorImport().
+            const helperBytes = decodeBase64(
+              'AGFzbQEAAAABDANfAGAAAW9gAW8BfwMDAgECBygCE0pzdl9HZXRFcnJvcl9pbXBvcnQAAA5Kc3ZFcnJvcl9DaGVjawABChMCBwD7AQD7GwsJACAA+xr7FAAL');
+            const helper = await WebAssembly.instantiate(helperBytes as BufferSource);
+            Object.assign(imports.env!, helper.instance.exports);
+            const result = await WebAssembly.instantiate(wasm as BufferSource, imports);
+            receive(result.instance, result.module);
+          })();
+          return {};
+        };
+        py = await loadPyodide({
+          indexURL: config.pyodideIndexURL,
+          packageBaseUrl: config.pyodideIndexURL,
+          createPyodideModule,
+          instantiateWasm,
+          stdLibURL: stdlibURL,
+          lockFileContents: decodeBase64Text(portable.lockJson),
+        }) as PyodideAPI;
+      } finally {
+        URL.revokeObjectURL(stdlibURL);
+      }
+      zip = decodeBase64(portable.decodersZip);
+    } else {
+      const asmURL = config.pyodideIndexURL + 'pyodide.asm.mjs';
+      const asmRes = await fetch(asmURL);
+      if (!asmRes.ok) {
+        throw new Error(`fetching ${asmURL} failed: ${asmRes.status} ${asmRes.statusText}`);
+      }
+      py = await loadPyodide({
+        indexURL: config.pyodideIndexURL,
+        createPyodideModule: evaluatePyodideModule(await asmRes.text()),
+      }) as PyodideAPI;
+      const res = await fetch(config.decodersURL);
+      if (!res.ok) {
+        throw new Error(`fetching ${config.decodersURL} failed: ${res.status} ${res.statusText}`);
+      }
+      zip = new Uint8Array(await res.arrayBuffer());
     }
-    const zip = new Uint8Array(await res.arrayBuffer());
     py.FS.writeFile('/decoders.zip', zip);
     py.FS.mkdir('/srd');
     py.FS.writeFile('/srd/sigrokdecode.py', sigrokdecodePy);
