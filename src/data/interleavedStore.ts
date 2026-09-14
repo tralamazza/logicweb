@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Daniel Tralamazza
 /**
- * InterleavedSampleStore - the alternative that was rejected, kept so the rejection is a
- * measurement instead of an opinion.
+ * InterleavedSampleStore - native device-order storage used by the SLogic32 U3 live path.
  *
  * Same contract, same pyramid shape, same block allocator, same query descent. The only
  * difference is the layout of the two big arrays:
  *
- *   - base: device order, one uint16 per sample, all 16 channels interleaved. This is the
- *     memcpy case - append is a straight copy with no transpose.
- *   - pyramid: per bin, a uint16 "some channel was high" mask and a uint16 "some channel
- *     was low" mask. That is 2 bits per channel per bin, exactly what the planar pyramid
- *     costs, so the memory comparison is a genuine tie and only speed separates them.
+ *   - base: device order, one uint16/uint32 per sample. This is the memcpy case - append
+ *     is a straight copy with no transpose.
+ *   - pyramid: per bin, one word each for "some channel was high" and "some channel was
+ *     low". That is 2 bits per channel per bin, exactly what the planar pyramid costs.
  *
  * What it cannot do is answer "is there a 1 anywhere in these 512 samples" with one
  * compare. It has to look at every sample, or every bin, one at a time.
  *
- * 16 channels only; this exists to be benchmarked against PlanarSampleStore, not shipped.
+ * The 16-channel form remains the comparison baseline. The 32-channel form is also the
+ * shipping SLogic32 U3 live store: at 800 MB/s, transposing every word on the USB/UI
+ * thread cannot keep up, while preserving the native interleaved words can.
  */
 
 import type { ColumnView, GapSpan, MemoryReport, SampleStore } from './types.js';
+import type { ChannelCount } from '../types.js';
 
 const BASE_BLOCK_LOG = 24; // 2^24 samples per block = 32 MiB of uint16 for 16 channels
 const BASE_BLOCK = 1 << BASE_BLOCK_LOG;
@@ -41,14 +42,20 @@ function levelBlockLog(level: number): number {
   return Math.max(8, BASE_BLOCK_LOG - LEVEL_LOG * level);
 }
 
+type WordArray = Uint16Array | Uint32Array;
+
+function words(bits: 16 | 32, length: number): WordArray {
+  return bits === 16 ? new Uint16Array(length) : new Uint32Array(length);
+}
+
 class MaskLevel {
   readonly blockLog: number;
   readonly block: number;
   readonly mask: number;
-  readonly hi: Uint16Array[] = [];
-  readonly lo: Uint16Array[] = [];
+  readonly hi: WordArray[] = [];
+  readonly lo: WordArray[] = [];
 
-  constructor(blockLog: number) {
+  constructor(blockLog: number, private readonly wordBits: 16 | 32) {
     this.blockLog = blockLog;
     this.block = 1 << blockLog;
     this.mask = this.block - 1;
@@ -57,24 +64,26 @@ class MaskLevel {
   reserve(bins: number): void {
     const need = Math.ceil(bins / this.block);
     while (this.hi.length < need) {
-      this.hi.push(new Uint16Array(this.block));
-      this.lo.push(new Uint16Array(this.block));
+      this.hi.push(words(this.wordBits, this.block));
+      this.lo.push(words(this.wordBits, this.block));
     }
   }
 
   byteLength(): number {
-    return (this.hi.length + this.lo.length) * this.block * 2;
+    return (this.hi.length + this.lo.length) * this.block * (this.wordBits >>> 3);
   }
 }
 
 export class InterleavedSampleStore implements SampleStore {
-  readonly channelCount = 16;
+  readonly channelCount: ChannelCount;
   readonly samplerate: number;
   length = 0;
   /** Query-time only, so the bench can sweep it on an already-built store. */
   coreBins: number = DEFAULT_CORE_BINS;
 
-  private readonly base: Uint16Array[] = [];
+  private readonly base: WordArray[] = [];
+  private readonly wordBits: 16 | 32;
+  private readonly bytesPerSample: 2 | 4;
   private readonly levels: MaskLevel[] = [];
   private readonly validBins: number[] = [];
   private readonly binSize: number[] = [];
@@ -85,31 +94,38 @@ export class InterleavedSampleStore implements SampleStore {
   private scratchEdge = new Uint8Array(0);
   private scratchPacked = new Uint8Array(0);
 
-  constructor(samplerate: number) {
+  constructor(samplerate: number, channelCount: 16 | 32 = 16) {
     if (!(samplerate > 0)) throw new Error(`samplerate must be positive, got ${samplerate}`);
+    if (channelCount !== 16 && channelCount !== 32) {
+      throw new Error(`interleaved channelCount must be 16 or 32, got ${channelCount}`);
+    }
+    this.channelCount = channelCount;
+    this.wordBits = channelCount;
+    this.bytesPerSample = channelCount >>> 3 as 2 | 4;
     this.samplerate = samplerate;
     this.binSize[0] = 1;
     this.validBins[0] = 0;
     for (let k = 1; k <= MAX_LEVEL; k++) {
-      this.levels[k] = new MaskLevel(levelBlockLog(k));
+      this.levels[k] = new MaskLevel(levelBlockLog(k), this.wordBits);
       this.binSize[k] = Math.pow(2, LEVEL_LOG * k);
       this.validBins[k] = 0;
     }
   }
 
   append(chunk: Uint8Array): void {
-    if (chunk.byteLength % 2 !== 0) throw new Error(`chunk of ${chunk.byteLength} bytes is not whole samples`);
-    const n = chunk.byteLength / 2;
+    const bps = this.bytesPerSample;
+    if (chunk.byteLength % bps !== 0) throw new Error(`chunk of ${chunk.byteLength} bytes is not whole samples`);
+    const n = chunk.byteLength / bps;
     if (n === 0) return;
     const from = this.length;
     const to = from + n;
     if (to > 0x7fffffff) throw new Error(`capture would exceed the 2^31 sample ceiling (${to})`);
 
-    while (this.base.length * BASE_BLOCK < to) this.base.push(new Uint16Array(BASE_BLOCK));
+    while (this.base.length * BASE_BLOCK < to) this.base.push(words(this.wordBits, BASE_BLOCK));
 
-    const src = (chunk.byteOffset & 1) === 0
-      ? new Uint16Array(chunk.buffer, chunk.byteOffset, n)
-      : (() => { const t = new Uint16Array(n); new Uint8Array(t.buffer).set(chunk); return t; })();
+    const src = (chunk.byteOffset & (bps - 1)) === 0
+      ? wordsView(chunk, this.wordBits, n)
+      : (() => { const t = words(this.wordBits, n); new Uint8Array(t.buffer).set(chunk); return t; })();
 
     let si = 0;
     let dst = from;
@@ -144,7 +160,7 @@ export class InterleavedSampleStore implements SampleStore {
           let h = 0, l = 0;
           for (let j = 0; j < 16; j++) { const v = arr[off + j]!; h |= v; l |= ~v; }
           lv.hi[i >>> lv.blockLog]![i & lv.mask] = h;
-          lv.lo[i >>> lv.blockLog]![i & lv.mask] = l & 0xffff;
+          lv.lo[i >>> lv.blockLog]![i & lv.mask] = l;
         }
       } else {
         const src = this.levels[k - 1]!;
@@ -222,7 +238,7 @@ export class InterleavedSampleStore implements SampleStore {
   }
 
   query(channel: number, startSample: number, endSample: number, bins: number): ColumnView {
-    if (channel < 0 || channel >= 16 || (channel | 0) !== channel) throw new Error(`channel ${channel} out of range`);
+    if (channel < 0 || channel >= this.channelCount || (channel | 0) !== channel) throw new Error(`channel ${channel} out of range`);
     if (!(bins > 0) || (bins | 0) !== bins) throw new Error(`bins must be a positive integer, got ${bins}`);
     if (!Number.isFinite(startSample) || !Number.isFinite(endSample)) {
       throw new Error(`query range must be finite, got [${startSample}, ${endSample})`);
@@ -262,7 +278,7 @@ export class InterleavedSampleStore implements SampleStore {
   }
 
   edges(channel: number, startSample: number, endSample: number): Int32Array {
-    if (channel < 0 || channel >= 16 || (channel | 0) !== channel) throw new Error(`channel ${channel} out of range`);
+    if (channel < 0 || channel >= this.channelCount || (channel | 0) !== channel) throw new Error(`channel ${channel} out of range`);
     const s = Math.max(1, Math.floor(startSample));
     const e = Math.min(this.length, Math.ceil(endSample));
     if (s >= e) return new Int32Array(0);
@@ -301,7 +317,7 @@ export class InterleavedSampleStore implements SampleStore {
   }
 
   memory(): MemoryReport {
-    const baseBytes = this.base.length * BASE_BLOCK * 2;
+    const baseBytes = this.base.length * BASE_BLOCK * this.bytesPerSample;
     let pyramidBytes = 0;
     for (let k = 1; k <= MAX_LEVEL; k++) pyramidBytes += this.levels[k]!.byteLength();
     return {
@@ -317,4 +333,10 @@ export class InterleavedSampleStore implements SampleStore {
     if (index < 0 || index >= this.length) throw new Error(`sample ${index} out of range`);
     return this.sampleBit(channel, index);
   }
+}
+
+function wordsView(chunk: Uint8Array, bits: 16 | 32, length: number): WordArray {
+  return bits === 16
+    ? new Uint16Array(chunk.buffer, chunk.byteOffset, length)
+    : new Uint32Array(chunk.buffer, chunk.byteOffset, length);
 }

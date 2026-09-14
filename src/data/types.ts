@@ -80,6 +80,8 @@ export interface SampleStore {
   gaps(): GapSpan[];
 }
 
+export type { ChannelCount } from '../types.js';
+
 /**
  * A span of samples the store has no data for. `endSample` is exclusive. Columns that
  * overlap a gap carry bit3 in `ColumnView.packed`, and `edges()` never reports a

@@ -32,6 +32,7 @@ import {
 } from './gaps.js';
 import type { ColumnView, GapSpan, MemoryReport, SampleStore } from './types.js';
 import { GAP_BIT } from './types.js';
+import { isChannelCount, type ChannelCount } from '../types.js';
 
 /** Segment size for the block index, as a log2. Segment = 2^SEG_LOG samples. */
 const SEG_LOG = 14;
@@ -47,7 +48,7 @@ export interface RleChannelData {
 }
 
 export interface RleStoreOptions {
-  channelCount: 4 | 8 | 16;
+  channelCount: ChannelCount;
   samplerate: number;
   /** Virtual sample count. Costs no memory; the store's cost is in edges. */
   length: number;
@@ -72,7 +73,7 @@ export interface RleTransitionSource {
 const MAX_LENGTH = 0x7fffffff;
 
 export class RleSampleStore implements SampleStore {
-  readonly channelCount: 4 | 8 | 16;
+  readonly channelCount: ChannelCount;
   readonly samplerate: number;
   readonly length: number;
 
@@ -91,8 +92,8 @@ export class RleSampleStore implements SampleStore {
 
   constructor(opts: RleStoreOptions) {
     const { channelCount, samplerate, length, channels } = opts;
-    if (channelCount !== 4 && channelCount !== 8 && channelCount !== 16) {
-      throw new Error(`channelCount must be 4, 8 or 16, got ${channelCount}`);
+    if (!isChannelCount(channelCount)) {
+      throw new Error(`channelCount must be one of 4, 8, 16, 32, 64 or 128, got ${channelCount}`);
     }
     if (!(samplerate > 0)) throw new Error(`samplerate must be positive, got ${samplerate}`);
     if (!isSampleIndex(length) || length < 0) {
@@ -137,7 +138,7 @@ export class RleSampleStore implements SampleStore {
    *   - a transition at or past `length` is dropped - the stream ends there.
    */
   static fromTransitions(
-    channelCount: 4 | 8 | 16, samplerate: number, length: number, sources: RleTransitionSource[],
+    channelCount: ChannelCount, samplerate: number, length: number, sources: RleTransitionSource[],
   ): RleSampleStore {
     if (!(samplerate > 0)) throw new Error(`samplerate must be positive, got ${samplerate}`);
     if (sources.length !== channelCount) {
@@ -189,7 +190,7 @@ export class RleSampleStore implements SampleStore {
       channels.push({ initial, edges });
     }
     return new RleSampleStore({
-      channelCount: store.channelCount as 4 | 8 | 16,
+      channelCount: store.channelCount as ChannelCount,
       samplerate: store.samplerate,
       length: store.length,
       channels,

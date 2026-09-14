@@ -3,9 +3,8 @@
 /**
  * src/data - sample storage and multiresolution query.
  *
- * The store other modules should use is PlanarSampleStore. InterleavedSampleStore is the
- * rejected alternative, kept and exported only so the comparison in NOTES.md can be
- * re-run rather than taken on trust; do not build the application on it.
+ * Call createSampleStore() rather than choosing a layout. It uses planar bit planes for
+ * ordinary widths and native interleaved uint32 words for the 800 MB/s SLogic32 path.
  */
 
 export type { SampleStore, ColumnView, MemoryReport, GapSpan } from './types.js';
@@ -14,20 +13,35 @@ export { appendLostSamples, channelAcrossGaps } from './gaps.js';
 export { PlanarSampleStore, type PlanarStoreOptions } from './planarStore.js';
 export { InterleavedSampleStore } from './interleavedStore.js';
 export { RleSampleStore, type RleChannelData, type RleTransitionSource } from './rleStore.js';
+export {
+  SoftwareTrigger,
+  MAX_SOFTWARE_TRIGGER_PREFIX_BYTES,
+  type SoftwareTriggerConfig,
+  type SoftwareTriggerKind,
+  type SoftwareTriggerLevel,
+  type SoftwareTriggerOptions,
+  type SoftwareTriggerStats,
+} from './softwareTrigger.js';
+export { runSoftwareTriggerSuite, type SoftwareTriggerTestResult } from './softwareTriggerSelftest.js';
 export { generateCapture, fillMacro, makeTileBlock, CHANNEL_NAMES, MACRO_SAMPLES } from './generator.js';
 export type { GeneratorOptions } from './generator.js';
 export { runFastSuite, testNarrowGlitch, testGeneratedGlitch, formatResults } from './selftest.js';
 export type { TestResult } from './selftest.js';
 
 import { PlanarSampleStore } from './planarStore.js';
+import { InterleavedSampleStore } from './interleavedStore.js';
 import { RleSampleStore, type RleChannelData, type RleTransitionSource } from './rleStore.js';
 import type { GapSpan, SampleStore } from './types.js';
+import type { ChannelCount } from '../types.js';
 
 /**
  * What src/device, src/ui and src/render should call. Keeps the concrete class out of
  * their imports so the layout can change without touching them.
  */
-export function createSampleStore(channelCount: 4 | 8 | 16, samplerate: number): SampleStore {
+export function createSampleStore(channelCount: ChannelCount, samplerate: number): SampleStore {
+  // Keep SLogic32 U3 words interleaved. At 200 MSa/s, copying its native uint32 stream
+  // is fast enough to sustain USB while a synchronous 32-plane transpose is not.
+  if (channelCount === 32) return new InterleavedSampleStore(samplerate, 32);
   return new PlanarSampleStore({ channelCount, samplerate });
 }
 
@@ -38,7 +52,7 @@ export function createSampleStore(channelCount: 4 | 8 | 16, samplerate: number):
  * so the two stores agree edge for edge. Takes ownership of the Float64Arrays.
  */
 export function createTransitionStore(
-  channelCount: 4 | 8 | 16, samplerate: number, length: number,
+  channelCount: ChannelCount, samplerate: number, length: number,
   channels: readonly RleTransitionSource[],
 ): SampleStore {
   return RleSampleStore.fromTransitions(channelCount, samplerate, length, [...channels]);
@@ -50,7 +64,7 @@ export function createTransitionStore(
  * them afterwards. `gaps` are the unknown spans, sorted and non-overlapping.
  */
 export function createEdgeStore(
-  channelCount: 4 | 8 | 16, samplerate: number, length: number,
+  channelCount: ChannelCount, samplerate: number, length: number,
   channels: readonly RleChannelData[], gaps?: readonly GapSpan[],
 ): SampleStore {
   return new RleSampleStore({
