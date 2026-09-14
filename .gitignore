@@ -11,3 +11,6 @@ public/decoders/
 # and show up as unrelated changes in every commit.
 __pycache__/
 *.pyc
+
+# Self-signed dev TLS pair for LAN serving (per-machine, regenerate with npm run cert)
+certs/
