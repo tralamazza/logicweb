@@ -213,5 +213,42 @@ not-found 状态，以及"启用了 Enable Mask 但没设任何通道条件"的�
   滑）不再误放游标、三指捏合基线重置、时间轴拖动 pointercancel 复位、pre-trigger
   文案改为显示受 64 MiB 上限截断后的实际时长、not-found 文案纠正、waiting 状态按钮
   动画、面板 armed 摘要。
-- 依旧无真机验证；真机复测清单同第 8 节，另加：高速率定时采集应自动停在设定时长，
+- 真机复测清单同第 8 节，另加：高速率定时采集应自动停在设定时长，
   软件触发命中后波形在 T=0 右侧应连续无缺口。
+
+### 10.5 真机验证、局域网服务与离线交付（2026-09-14）
+
+真机（SLogic32 U3，S/N 202608052052）经 CDP + WebUSB 预授权 Chromium 实测：
+
+- **990 ms 卡死已修复。** 根因不是合并缓冲尾部，而是固件在设定长度处结束上传且**无 ZLP**，
+  固定大小的最后一次 `transferIn` 越过末尾后永远 NAK。修复为 readLoop 的“最后一读”按
+  `deviceWireBytes` 收敛（借鉴 libsigrok protocol.c:79-82）。实测 32ch@10M/1s 恰好停在
+  10,000,000 采样。假 USB 设备已改为不发 ZLP 的模型，否则掩盖此 bug。
+- **软件触发命中，`triggerSampleIndex` 落在保留窗口内**，跨线程/传输层数据不再 detach。
+- **布局自适应**三视口冒烟通过（HTTPS 下复测）。
+
+**200M 采集是已知天花板，不是 re-arm bug。** 32ch@200M = 800 MB/s，高于 Chromium WebUSB
+上限（~458 MB/s，见 `src/device/NOTES.md` 8.7）。该采集即使完成也会冲垮设备 FIFO 并使
+**采样通路**卡死（NOTES 8.8 的 W1：每次 bulk 读超时、无数据、无错误），导致**下一次**采集读到
+0 字节，只能物理重新插拔恢复。因此自动化测试中任何 200M 压力用例必须放在**最后**，否则会污染
+其后所有可达速率用例——这正是先前测试顺序踩的坑（`/tmp/hw-test.mjs` 已重排，200M 置末且其
+卡死记为 INFO 而非 FAIL）。
+
+**`USBDevice.reset()` 不能恢复卡死的板子**（NOTES 8.8 实测：`libusb_reset_device` 返回
+“Entity not found”，设备直接掉出总线且不重枚举），故**不应**在传输层加 reset 恢复逻辑——
+现有 no-data 看门狗给出的“拔插重连”干净报错已是最优。
+
+**局域网服务（供手机测试）**：`npm run dev:lan` 在 `0.0.0.0:5173` 上以 HTTPS 提供实时应用，
+`npm run preview:lan` 在 5174 上提供构建产物。默认 `npm run dev`/`preview` 仍为 localhost+HTTP。
+`LOGICWEB_LAN=1` 触发 `vite.config.ts` 的 `lanServer()` 切到 `0.0.0.0`+自签证书（`certs/`，
+已 gitignore，`npm run cert` 生成、自动把本机 LAN IP 写入 SAN）。**HTTPS 是必需的**：WebUSB
+只在安全上下文存在，localhost 算，裸 LAN IP 走 HTTP 不算，手机上 `navigator.usb` 会缺失；
+接受一次自签证书后手机即为安全上下文（响应式 UI，以及经 OTG 插到安卓手机上的分析仪均可用）。
+
+**离线交付：便携单文件正是“Save Page As”能离线用的前提，而非其替代。** 普通多文件页面无法经
+浏览器“网页另存为”离线使用——模块 worker 无法在 `file://` 不透明源启动（故用 iife/blob worker），
+Pyodide WASM/解码器按计算出的 URL 抓取，Chrome 的“完整保存”会破坏它。`npm run dist`
+（`LOGICWEB_PORTABLE=1`）把 JS/CSS/worker/Pyodide/解码器全部以 data URI 内联进一个约 21 MB、
+无任何外部引用的 `dist/index.html`；在该页上“网页另存为→仅 HTML”即得到一个可离线运行的单文件
+（`npm run check:portable` 从 `file://` 加载并解码 UART 验证通过）。故交付方式为：保留
+`npm run dist`，但把它的产物**作为用户访问的页面**（`preview:lan`），Ctrl+S 即可整体保存。
