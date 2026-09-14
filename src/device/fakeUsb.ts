@@ -290,7 +290,11 @@ export class ClockStreamDevice extends FakeSlogic {
   transferIn(_ep: number, len: number): Promise<USBInTransferResult> {
     // Past its programmed length the device is stopped, and a read with nothing behind it
     // never completes - exactly the state the driver's self-stop handling exists for.
-    if (!this.running || this.taken >= this.limitBytes) {
+    // A read that *extends* past the length is the same fate arriving later: the board
+    // sends its last full packet at the limit with no short packet and no ZLP (measured
+    // 2026-09-14), so the URB fills partially and NAKs until it is cancelled.
+    if (!this.running || this.taken >= this.limitBytes ||
+        this.taken + this.committed + len > this.limitBytes) {
       return new Promise<USBInTransferResult>((_resolve, reject) => {
         this.stoppedReads.push(reject);
       });

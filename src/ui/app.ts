@@ -1417,6 +1417,7 @@ export class App {
       label: this.captureLabel,
       error: this.statusError,
       running: this.running,
+      stopping: this.stopping,
       device: this.device?.name ?? null,
       transport: this.device instanceof WorkerSlogicDevice ? 'worker' : 'page',
       transportFallback: workerTransport.lastFallbackReason,

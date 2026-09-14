@@ -1048,14 +1048,21 @@ export class Slogic16U3 implements Device {
     // and they have to happen before the read loop arms, which is the order below.
     await programCtrl(bus, CTRL_RUN, (e) => this.trace(e), 'start: CTRL');
     this.running = true;
-    // The capture's own length in wire bytes, when there is one, is what bounds the read
-    // loop's queue - the driver's rule (protocol.c:395), and the only bound that does not
-    // depend on how quickly the consumer is draining. Zero means "not known before RUN",
-    // which is software-trigger mode; the loop then falls back to the consumer bound.
-    const budgetBytes = opts.deviceSampleLimit && opts.deviceSampleLimit > 0
-      ? Math.ceil(opts.deviceSampleLimit * bytesPerSampleForChannels(cfg.channels)) + HEAD_DROP_BYTES
+    // The exact number of wire bytes the device will send before it stops itself, when
+    // there is one: the *armed* length (rounded up by the register's granularity), in
+    // wire bytes, junk head included. It bounds the read loop's queue - the driver's
+    // rule (protocol.c:395) - and, more importantly, sizes the final transferIn.
+    // Measured on S/N 202608052052 (2026-09-14): the firmware ends its upload exactly at
+    // the armed length with NO short packet or ZLP, so a fixed-size final read that
+    // reaches past it never completes and the capture's tail sits in a URB forever -
+    // the "1 s capture stuck at 99%" report. libsigrok clamps its last transfer to the
+    // remaining bytes for exactly this reason (protocol.c:79-82). Zero means "not known
+    // before RUN", which is software-trigger mode; the loop then falls back to the
+    // consumer bound and fixed-size reads.
+    const deviceWireBytes = this.armedDeviceSamples > 0
+      ? Math.ceil(this.armedDeviceSamples * this.wireBytesPerSample(cfg.channels))
       : 0;
-    this.loopDone = this.readLoop(started, budgetBytes).catch(() => {});
+    this.loopDone = this.readLoop(started, deviceWireBytes).catch(() => {});
     this.armNoDataWatchdog(cfg);
     this.armLoopStallWatch(started);
     this.trace({
@@ -1078,7 +1085,7 @@ export class Slogic16U3 implements Device {
    * re-submit until the next loop iteration. Sequence numbers retain endpoint order even
    * if the browser happens to resolve promise callbacks out of order.
    */
-  private async readLoop(started: number, budgetBytes = 0): Promise<void> {
+  private async readLoop(started: number, deviceWireBytes = 0): Promise<void> {
     const { depth, transferBytes } = this.tuning!;
     const completed = new Map<number, CompletedTransfer>();
     const inFlight = new Set<Promise<void>>();
@@ -1237,17 +1244,27 @@ export class Slogic16U3 implements Device {
      */
     const outstandingChunks = (): number => completed.size + inFlight.size;
     /**
-     * The capture's own length in wire bytes, plus one read, or 0 when there is none.
+     * Wire bytes already asked of the endpoint, across every submitted transferIn.
      *
-     * The one read of slack is the driver's: it submits while `samples_got + used * per <
-     * samples_need`, so the last read may carry past the budget. Without it a capture stops
-     * arming one read short of its length and ends on the host's timeout instead of on the
-     * device's own stop.
+     * A capture with a known length (`deviceWireBytes > 0`) uses it two ways, both the
+     * driver's own (protocol.c:79-82, :395): reads stop being armed once the whole
+     * length has been requested, and the *final* read is clamped to exactly the bytes
+     * that remain. The clamp is not an optimisation. The firmware stops its upload at
+     * the armed length without a short packet or a ZLP (measured on S/N 202608052052),
+     * so a fixed-size read that reaches past the end fills partially and then NAKs
+     * forever - the capture's tail sits in that URB until the interface is released,
+     * and the caller waits on samples that are never coming. Sized exactly, the last
+     * read completes the moment the device's last byte lands, the loop runs dry on its
+     * own, and stop() has nothing to cancel.
+     *
+     * Every quantity here is 1024-aligned (the armed length is a multiple of 1024
+     * samples, transferBytes a multiple of PACKET_BYTES), so a clamped read is still a
+     * whole number of max-size packets and cannot babble.
      */
-    const captureBudgetBytes = budgetBytes > 0 ? budgetBytes + transferBytes : 0;
+    let requestedBytes = 0;
     let lagStoppedRefill = false;
-    const withinBudget = (): boolean => captureBudgetBytes > 0
-      ? this.stats.rawBytes < captureBudgetBytes
+    const withinBudget = (): boolean => deviceWireBytes > 0
+      ? requestedBytes < deviceWireBytes
       : outstandingChunks() < lagChunks;
     const canArm = (): boolean => inFlight.size < depth && withinBudget();
     /**
@@ -1256,7 +1273,7 @@ export class Slogic16U3 implements Device {
      * the trace rather than looking like a slow device.
      */
     const noteLagStop = (): void => {
-      if (captureBudgetBytes > 0 || lagStoppedRefill) return;
+      if (deviceWireBytes > 0 || lagStoppedRefill) return;
       lagStoppedRefill = true;
       this.trace({
         dir: 'info',
@@ -1277,16 +1294,22 @@ export class Slogic16U3 implements Device {
           canArm()) {
         arm();
         this.rearmMs.push(performance.now() - item.completedAt);
-      } else if (this.running && captureBudgetBytes === 0) {
+      } else if (this.running && deviceWireBytes === 0) {
         noteLagStop();
       }
       notify();
     };
     const arm = (): void => {
+      // The driver's clamp: the last read asks for exactly what the device still owes.
+      const size = deviceWireBytes > 0
+        ? Math.min(transferBytes, deviceWireBytes - requestedBytes)
+        : transferBytes;
+      if (size <= 0) return;
+      requestedBytes += size;
       const sequence = submitted++;
       let request: Promise<USBInTransferResult>;
       try {
-        request = this.usb.transferIn(EP_IN, transferBytes);
+        request = this.usb.transferIn(EP_IN, size);
       } catch (error) {
         finish({ sequence, completedAt: performance.now(), error });
         return;
@@ -1303,6 +1326,10 @@ export class Slogic16U3 implements Device {
             idleSince = null;
           }
           if (result.status === 'ok' && result.data) {
+            // A short completion means the endpoint sent less than was asked: those
+            // bytes are still owed, and without giving them back the loop would stop
+            // arming short of the device's length and hang on its tail.
+            requestedBytes -= size - result.data.byteLength;
             observeCompletion(result.data.byteLength, completedAt);
           }
           finish({ sequence, completedAt, result });
